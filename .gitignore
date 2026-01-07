@@ -1,0 +1,5 @@
+rat_images
+frames
+*.mp4
+*.xml
+.DS_Store
