@@ -1,0 +1,7 @@
+train: images/Train
+val: images/Val
+names:
+  0: rat
+  1: human
+  2: labyrinth
+path: data

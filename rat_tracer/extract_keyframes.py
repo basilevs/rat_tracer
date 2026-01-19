@@ -2,16 +2,16 @@
 
 from pathlib import Path
 from xml.etree import ElementTree
-from typing import Dict, Generator, Tuple
+from typing import Dict, Generator, Iterator, Tuple
 from imageio import imwrite
 from imageio_ffmpeg import read_frames
 from numpy import frombuffer, ndarray, uint8
 
-OUT_DIR = Path("rat_images")
+OUT_DIR = Path("data/images/Train")
 OUT_DIR.mkdir(exist_ok=True)
 
 
-def iter_frames(video_path, *, pix_fmt="rgb24") -> Generator[Tuple[int, ndarray]]:
+def iter_frames(video_path, *, pix_fmt="rgb24") -> Iterator[Tuple[int, ndarray]]:
     """
     Yield (frame_index, frame_array) for all decoded frames.
 
@@ -28,7 +28,7 @@ def iter_frames(video_path, *, pix_fmt="rgb24") -> Generator[Tuple[int, ndarray]
         frame = frame.reshape((height, width, 3))
         yield idx, frame
 
-def extract_box_coordinates(xml_path: str) -> Generator[Tuple[int, float, float, float, float], None, None]:
+def extract_box_coordinates(xml_path: str) -> Iterator[Tuple[int, float, float, float, float]]:
     """
     Parse an XML file and yield rectangle coordinates from <box> elements under <track>.
 
@@ -78,9 +78,11 @@ def main():
     for idx, frame in iter_frames("input/input.mp4"):
         if idx not in by_frame:
             continue
-        region = by_frame.pop(idx)
-        frame = extract_region(frame, *region)
-        imwrite(OUT_DIR / f"frame_{idx}.png", frame)
+        by_frame.pop(idx)
+        #frame = extract_region(frame, *region)
+        # data/images/Train/frame_000006.png
+        imwrite(OUT_DIR / f"frame_{idx:0>6}.png", frame)
+        #imwrite(OUT_DIR / f"frame_{idx}.png", frame)
 
 if __name__ == "__main__":
     main()

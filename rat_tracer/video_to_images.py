@@ -1,30 +1,26 @@
-"""Extract some images from video"""
+from cv2 import imwrite, VideoCapture, CAP_PROP_POS_FRAMES
 from pathlib import Path
-from imageio_ffmpeg import read_frames
-from imageio.v3 import imwrite
-from numpy import uint8, frombuffer
+from sys import argv
 
-VIDEO = "/private/tmp/input.mp4"
-FRAMES = {2000, 4000, 6000}
-OUT_DIR = Path("frames")
-OUT_DIR.mkdir(exist_ok=True)
+def main():
+    VIDEO = Path(argv[1])
+    if not VIDEO.exists():
+        raise FileNotFoundError(VIDEO)
+    FRAMES = map(int, argv[2:])
+    OUT_DIR = Path("images")
+    OUT_DIR.mkdir(exist_ok=True)
 
-reader = read_frames(
-    VIDEO,
-    pix_fmt="rgb24",
-)
+    filename_prefix = VIDEO.with_suffix("").name;
+    cap = VideoCapture(VIDEO)
 
-meta = next(reader)
-width, height = meta["size"]
+    for frame in FRAMES:
+        cap.set(CAP_PROP_POS_FRAMES, frame)
+        ok, img = cap.read()
+        if not ok:
+            raise RuntimeError(f"Cannot read frame {frame}")
+        imwrite(str(OUT_DIR / f"{filename_prefix}_{frame:0>6}.png"), img)
 
-for idx, frame_bytes in enumerate(reader):
-    if not FRAMES:
-        break
-    if idx not in FRAMES:
-        continue
-    FRAMES.remove(idx)
+    cap.release()
 
-    frame = frombuffer(frame_bytes, dtype=uint8)
-    frame = frame.reshape((height, width, 3))
-
-    imwrite(OUT_DIR / f"frame_{idx}.png", frame)
+if __name__ == "__main__":
+    main()
