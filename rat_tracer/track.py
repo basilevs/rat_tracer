@@ -9,8 +9,9 @@ model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train11/weights/b
 def save_result(idx:int, results:Results):
     height, width = results.orig_shape
     data = frombuffer(results.orig_img, dtype=uint8)
+    name = Path(results.path).with_suffix('').name
     data = data.reshape((height, width, 3))
-    filename = f"frame_{idx:0>6}.jpg"
+    filename = f"{name}_{idx:0>6}.jpg"
     #imwrite(raw_dir / filename, data)
     target_dir = Path(results.save_dir) / 'track_loss'
     try:
@@ -23,7 +24,7 @@ def save_result(idx:int, results:Results):
 def main():
     current_tracks = set()
     previous_result: Results = None
-    stream = model.track('input/2025-10-12.mp4', show=True, stream=True, save_txt=False, save=True, verbose=False)
+    stream = model.track('input/2025-10-16.mp4', show=True, stream=True, save_txt=False, save=True, verbose=False)
     for idx, results in enumerate(stream):
         if results.boxes.id is None or not results.boxes.id.numel():
             found = set()
