@@ -5,6 +5,7 @@
     "version": "0.2.0",
     "configurations": [
 
+
         {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
@@ -24,9 +25,9 @@
             "name": "copy_static_label",
             "type": "debugpy",
             "request": "launch",
-            "program": "rat_tracer/copy_static_label.py",
+            "program": "rat_tracer/spread_static_label.py",
             "console": "integratedTerminal",
-            "args": "rat_tracer/copy_static_label.py data/labels/Val/2025-10-10_000967.txt data/labels/Val"
+            "args": "data/labels/Val"
         }
     ]
 }
