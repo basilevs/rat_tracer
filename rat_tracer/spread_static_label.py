@@ -1,4 +1,5 @@
-from sys import argv
+from sys import argv, stdout
+from os import SEEK_END
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Tuple
@@ -45,9 +46,18 @@ def spread_annotations(annotations: list[Annotation], target_cls: int, files: It
         if not equal(labyrinth_coordinates(existing_annotations), original_lab_coords):
             continue
         print("  ", path)
+        ends_with_eol = False
+        with open(path, 'rb') as f:
+            f.seek(-1, SEEK_END)
+            b = f.read()
+            ends_with_eol = b == b'\n'
+
         with open(path, 'a', encoding='utf-8') as f:
+            o = f
+            if not ends_with_eol:
+                print(file = o)
             for i in annotations_to_add:
-                print(i.cls, *i.coords, file=f)
+                print(i.cls, *i.coords, file = o)
 
 
 def main():
