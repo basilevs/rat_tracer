@@ -4,7 +4,7 @@ from numpy import frombuffer, uint8
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train11/weights/best.pt")
+model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train18/weights/best.pt")
 
 def save_result(idx:int, results:Results):
     height, width = results.orig_shape
@@ -24,7 +24,7 @@ def save_result(idx:int, results:Results):
 def main():
     current_tracks = set()
     previous_result: Results = None
-    stream = model.track('input/2025-10-16.mp4', show=True, stream=True, save_txt=False, save=True, verbose=False)
+    stream = model.track('input/2025-10-12.mp4', show=True, conf=0.1, stream=True, save_txt=False, save=True, verbose=False, tracker="botsort.yaml")
     for idx, results in enumerate(stream):
         if results.boxes.id is None or not results.boxes.id.numel():
             found = set()
