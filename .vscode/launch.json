@@ -4,6 +4,7 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
@@ -18,6 +19,14 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": "${command:pickArgs}"
+        },
+                {
+            "name": "copy_static_label",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "rat_tracer/copy_static_label.py",
+            "console": "integratedTerminal",
+            "args": "rat_tracer/copy_static_label.py data/labels/Val/2025-10-10_000967.txt data/labels/Val"
         }
     ]
 }
