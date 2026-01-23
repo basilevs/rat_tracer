@@ -9,7 +9,7 @@ from video_to_images import extract_frames
 
 
 def _path_to_frame(p: Path) -> int:
-    return int(p.with_suffix('').name.split('_')[:-1])
+    return int(p.with_suffix('').name.split('_')[-1])
 
 def _main():
     video = Path(argv[1])

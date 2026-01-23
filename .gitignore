@@ -12,3 +12,4 @@ exp10-new/yolov8s-c3k2-6-m005-6
 train.txt
 track.txt
 *.cache
+*.pyc
