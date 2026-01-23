@@ -21,13 +21,21 @@
             "console": "integratedTerminal",
             "args": "${command:pickArgs}"
         },
-                {
+        {
             "name": "copy_static_label",
             "type": "debugpy",
             "request": "launch",
             "program": "rat_tracer/spread_static_label.py",
             "console": "integratedTerminal",
-            "args": "data/labels/Val"
+            "args": "data/labels/Train"
+        },
+        {
+            "name": "find_moves",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "rat_tracer/find_moves.py",
+            "console": "integratedTerminal",
+            "args": "2 data/labels/Train"
         }
     ]
 }
