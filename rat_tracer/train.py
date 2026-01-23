@@ -15,4 +15,4 @@ model = YOLO("runs/detect/train18/weights/last.pt")
 
 model.add_callback("on_train_epoch_end", print_rss_after_epoch)
 
-model.train(data="data/data.yaml", epochs=10, imgsz=640, device="mps", workers=2, cache=False, resume=False)
+model.train(data="data/data.yaml", epochs=20, imgsz=640, device="mps", workers=2, cache=False, resume=False)
