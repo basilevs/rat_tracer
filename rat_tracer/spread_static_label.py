@@ -28,7 +28,7 @@ def labyrinth_coordinates(annotations:list[Annotation]) -> list[float]:
 def equal(a: list[float], b:list[float]):
     if len(a) != len(b):
         return False
-    result = all(abs(ae - be) < 0.002 for ae, be in zip(a, b))
+    result = all(abs(ae - be) < 0.003 for ae, be in zip(a, b))
     return result
 
 
