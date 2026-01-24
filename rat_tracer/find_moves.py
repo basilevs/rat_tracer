@@ -8,17 +8,8 @@ from pathlib import Path
 from sys import argv
 from typing import Iterator, Tuple
 
-@dataclass
-class Annotation:
-    cls: int
-    coords: list[float]
+from rat_tracer.lib import Annotation, read_annotations
 
-def read_annotations(path: Path) -> Iterator[Annotation]:
-    for line in path.read_text().split('\n'):
-        if not line:
-            continue
-        fields = line.split(' ')
-        yield Annotation(int(fields[0]), list(map(float, fields[1:])))
 
 def labyrinth_coordinates(annotations:list[Annotation]) -> list[float]:
     labs = [a for a in annotations if a.cls == 2]

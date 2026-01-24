@@ -3,7 +3,7 @@ from sys import argv
 
 from ultralytics import YOLO
 
-model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train3/weights/best.pt")
+model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train20/weights/best.pt")
 
 results = model.predict(argv[1], stream=True)
 
