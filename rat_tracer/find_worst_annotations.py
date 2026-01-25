@@ -241,7 +241,7 @@ def visualize(model, worst, cls: int):
 root = Path('data/images')
 images = chain((root / 'Train').glob('*.png'), (root / 'Val').glob('*.png') )
 #images = [Path('data/images/Train/2026-01-15-2_000356.png')]
-model = YOLO("runs/detect/train23/weights/best.pt")
+model = YOLO("runs/detect/train24/weights/best.pt")
 worst = nlargest(30, files_to_errors(list(images)), lambda x: x.error)
 worst.sort(key = lambda x: x.error)
 for i in worst:

@@ -113,9 +113,13 @@ def track_set(results: Results) -> set[float]:
         found = set(results.boxes.id.tolist())
     return found
 
+def on_predict_postprocess_end(results):
+    pass
+
 def main():
     previous_result: Results = None
-    model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train23/weights/best.pt")
+    model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train24/weights/best.pt")
+    model.add_callback("on_predict_postprocess_end", on_predict_postprocess_end)
 
     stream = model.track(
         'input/2026-01-15-2.mp4',
