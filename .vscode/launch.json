@@ -44,6 +44,14 @@
             "program": "rat_tracer/find_moves.py",
             "console": "integratedTerminal",
             "args": "2 data/labels/Train"
+        },
+        {
+            "name": "paint",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "rat_tracer/paint.py",
+            "console": "integratedTerminal",
+            "args": "input/2026-01-15-2.mp4 /private/tmp/output.mp4"
         }
     ]
 }
