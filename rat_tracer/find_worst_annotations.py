@@ -9,41 +9,30 @@ from shutil import copy2
 from os import makedirs
 from typing import Iterator, TypeVar
 
-from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite
+from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line
 
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from rat_tracer.lib import Annotation, read_annotations
+from rat_tracer.lib import Annotation, Point, Box, read_annotations
 
 
 T = TypeVar("T")
 
 @dataclass
-class Box:
-    tl: Point
-    br: Point
-    confidence: float = 1
-    def __post_init__(self):
-        assert self.tl.x <= self.br.x
-        assert self.tl.y <= self.br.y
-        assert self.confidence >= 0.
-        assert self.confidence <= 1.
-        self.area = (self.br.x - self.tl.x) * (self.br.y - self.tl.y)
-        assert self.area >= 0.
-        self.center = middle(self.tl, self.br)
-    def intersection_area(self, other) -> float:
-        return intersection_length(self.tl.x, self.br.x, other.tl.x, other.br.x) * intersection_length(self.tl.y, self.br.y, other.tl.y, other.br.y)
+class Prediction:
+    box: Box
+    confidence: float
 
-EMPTY_BOX = Box(Point(0, 0), Point(0, 0), 0.)
-def box_error(truth: Box, prediction: Box) -> float:
-    prediction = prediction or EMPTY_BOX
-    truth = truth or EMPTY_BOX
-    intersection_area = truth.intersection_area(prediction)
+EMPTY_PREDICTION = Prediction(Box(Point(0, 0), Point(0, 0)), 0.)
+def box_error(truth: Prediction, prediction: Prediction) -> float:
+    prediction = prediction or EMPTY_PREDICTION
+    truth = truth or EMPTY_PREDICTION
+    intersection_area = truth.box.intersection_area(prediction.box)
     assert intersection_area >= 0
-    difference_area = prediction.area + truth.area - intersection_area
+    difference_area = prediction.box.area + truth.box.area - intersection_area
     assert difference_area >= 0
-    result = (prediction.area - intersection_area) * prediction.confidence + (truth.area - intersection_area) * truth.confidence + intersection_area * abs(truth.confidence - prediction.confidence)
+    result = (prediction.box.area - intersection_area) * prediction.confidence + (truth.box.area - intersection_area) * truth.confidence + intersection_area * abs(truth.confidence - prediction.confidence)
     assert result >= 0.
     return result
 
@@ -71,19 +60,19 @@ def box_iou(a: Box, b: Box) -> float:
     assert union > 0
     return inter / union
 
-def pop_nearest(boxes:list[Box], to_find: Box) -> Box | None:
-    def distance(box):
-        return -box_iou(box, to_find)
+def pop_nearest(boxes:list[Prediction], to_find: Box) -> Box | None:
+    def distance(box:Prediction):
+        return -box_iou(box.box, to_find)
     return pop_minimum(boxes, distance)
 
-def boxes_error(truth: list[Box], prediction: list[Box]):
+def boxes_error(truth: list[Prediction], prediction: list[Prediction]):
     truth = list(truth)
     prediction = list(prediction)
     error = 0.
     while truth or prediction:
         try:
             t = truth.pop()
-            closest = pop_nearest(prediction, t)
+            closest = pop_nearest(prediction, t.box)
             local_error = box_error(t, closest)
             assert local_error >= 0.
             assert abs(local_error - box_error(closest, t)) < 0.00001
@@ -105,8 +94,7 @@ def annotation_to_box(a: Annotation, width: float, height: float) -> Box:
     half_h = h * height / 2
     return Box(
         Point(cx * width - half_w, cy * height - half_h),
-        Point(cx * width + half_w, cy * height + half_h),
-        1.0,
+        Point(cx * width + half_w, cy * height + half_h)
     )
 
 def truth_for_results(results: Results) -> Iterator[Annotation]:
@@ -118,11 +106,11 @@ def result_error(results: Results, cls: int) -> float:
         if int(box.cls.item()) != cls:
             continue
         x1, y1, x2, y2 = map(float, box.xyxy[0])
-        prediction.append(Box(Point(x1, y1), Point(x2, y2), float(box.conf)))
+        prediction.append(Prediction(Box(Point(x1, y1), Point(x2, y2)), float(box.conf)))
     annotations = list(x for x in truth_for_results(results) if x.cls == cls)
     height, width = results.orig_shape
     truth = [annotation_to_box(b, width, height) for b in annotations]
-    return boxes_error(truth, prediction)
+    return boxes_error(list(Prediction(x, 1.) for x in truth), prediction)
 
 def reannotate(files: list[Path]):
     model.predict(list(files), show=True, stream=False, save_txt=True, save=True, verbose=True)
@@ -153,8 +141,6 @@ def files_to_errors(files: list[Path]) -> Iterator[Datum]:
         result = Datum(error, path)
         print(result)
         yield result
-
-from cv2 import line
 
 def dashed_line(img, p1, p2, color, thickness=1, dash_len=6, gap_len=4):
     x1, y1 = p1
@@ -234,11 +220,11 @@ def visualize_gt_vs_pred(
     imwrite(target_dir / filename, img)
 
 
-def visualize_worst(model, worst, cls: int):
+def visualize(model, worst, cls: int):
     paths = [d.path for d in worst]
     results = model.predict(
         paths,
-        show=False,
+        show=True,
         stream=True,
         save=False,
         verbose=False,
@@ -254,11 +240,12 @@ def visualize_worst(model, worst, cls: int):
 
 root = Path('data/images')
 images = chain((root / 'Train').glob('*.png'), (root / 'Val').glob('*.png') )
-model = YOLO("runs/detect/train21/weights/best.pt")
+#images = [Path('data/images/Train/2026-01-15-2_000356.png')]
+model = YOLO("runs/detect/train23/weights/best.pt")
 worst = nlargest(30, files_to_errors(list(images)), lambda x: x.error)
 worst.sort(key = lambda x: x.error)
 for i in worst:
     print(i)
 
-visualize_worst(model, worst, 0)
+visualize(model, worst, 0)
 #reannotate(map(lambda x: x.path, worst))

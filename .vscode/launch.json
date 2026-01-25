@@ -30,6 +30,14 @@
             "args": "data/labels/Train"
         },
         {
+            "name": "find_worst_annotations",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "rat_tracer/find_worst_annotations.py",
+            "console": "integratedTerminal",
+            "args": ""
+        },
+        {
             "name": "find_moves",
             "type": "debugpy",
             "request": "launch",
