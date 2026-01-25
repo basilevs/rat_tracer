@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from os import mkdir
 from pathlib import Path
-from pprint import pprint
 from dataclasses import dataclass
-from heapq import heappushpop, heappush, heappop, nlargest
-from itertools import chain, starmap, zip_longest
+from heapq import heappop, nlargest
+from itertools import chain
 from shutil import copy2
 from os import makedirs
-from typing import Callable, Iterator, TypeVar
+from typing import Iterator, TypeVar
+
+from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite
 
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
@@ -18,27 +18,6 @@ from rat_tracer.lib import Annotation, read_annotations
 
 
 T = TypeVar("T")
-
-def intersection_length(min1: float, max1: float, min2: float, max2: float):
-    """ length of intersection between intervals 1 and 2"""
-    assert(min1 <= max1)
-    assert(min2 <= max2)
-    if min1 >= max2 or min2 >= max1:
-        return 0
-    result = min(max1, max2) - max(min1, min2)
-    assert(result > 0)
-    return result
-
-@dataclass
-class Point:
-    x: float
-    y: float
-
-def middle(a: Point, b: Point) -> Point:
-    return Point((a.x + b.x)/2, (a.y+b.y)/2)
-
-def distance_squared(a: Point, b: Point) -> float:
-    return (a.x - b.x)**2 + (a.y - b.y)**2
 
 @dataclass
 class Box:
@@ -84,9 +63,17 @@ def pop_minimum(items: list[T], key: Callable[[T], float]) -> T | None:
 
     return items.pop(min_idx)
 
-def pop_nearest(boxes:list[Box], to_find: Point) -> Box | None:
+def box_iou(a: Box, b: Box) -> float:
+    inter = a.intersection_area(b)
+    if inter <= 0:
+        return 0.0
+    union = a.area + b.area - inter
+    assert union > 0
+    return inter / union
+
+def pop_nearest(boxes:list[Box], to_find: Box) -> Box | None:
     def distance(box):
-        return distance_squared(box.center, to_find)
+        return -box_iou(box, to_find)
     return pop_minimum(boxes, distance)
 
 def boxes_error(truth: list[Box], prediction: list[Box]):
@@ -96,7 +83,7 @@ def boxes_error(truth: list[Box], prediction: list[Box]):
     while truth or prediction:
         try:
             t = truth.pop()
-            closest = pop_nearest(prediction, t.center)
+            closest = pop_nearest(prediction, t)
             local_error = box_error(t, closest)
             assert local_error >= 0.
             assert abs(local_error - box_error(closest, t)) < 0.00001
@@ -113,16 +100,26 @@ def label_path_from_image(image: Path) -> Path:
     return root.parent / 'labels' / relative
 
 def annotation_to_box(a: Annotation, width: float, height: float) -> Box:
-    return Box(Point(a.coords[0] * width, a.coords[1] * height), Point((a.coords[0] + a.coords[2] * 2) * width, (a.coords[1] + a.coords[3] * 2)*height), 1.)
+    cx, cy, w, h = a.coords
+    half_w = w * width / 2
+    half_h = h * height / 2
+    return Box(
+        Point(cx * width - half_w, cy * height - half_h),
+        Point(cx * width + half_w, cy * height + half_h),
+        1.0,
+    )
 
+def truth_for_results(results: Results) -> Iterator[Annotation]:
+    return read_annotations(label_path_from_image(Path(results.path)))
+                     
 def result_error(results: Results, cls: int) -> float:
     prediction = []
     for box in results.boxes:
-        if box.cls != cls:
+        if int(box.cls.item()) != cls:
             continue
         x1, y1, x2, y2 = map(float, box.xyxy[0])
         prediction.append(Box(Point(x1, y1), Point(x2, y2), float(box.conf)))
-    annotations = list(x for x in read_annotations(label_path_from_image(Path(results.path))) if x.cls == cls)
+    annotations = list(x for x in truth_for_results(results) if x.cls == cls)
     height, width = results.orig_shape
     truth = [annotation_to_box(b, width, height) for b in annotations]
     return boxes_error(truth, prediction)
@@ -151,20 +148,117 @@ class Datum:
 
 def files_to_errors(files: list[Path]) -> Iterator[Datum]: 
     for result in model.predict(list(files), show=False, stream=True, save_txt=False, save=False, verbose=True):
-        if not result.boxes.conf.numel():
-            continue
         path = Path(result.path)
         error: float = result_error(result, 0)
         result = Datum(error, path)
         print(result)
         yield result
 
+from cv2 import line
+
+def dashed_line(img, p1, p2, color, thickness=1, dash_len=6, gap_len=4):
+    x1, y1 = p1
+    x2, y2 = p2
+    length = ((x2 - x1)**2 + (y2 - y1)**2) ** 0.5
+    if length == 0:
+        return
+
+    dx = (x2 - x1) / length
+    dy = (y2 - y1) / length
+
+    dist = 0.0
+    draw = True
+    while dist < length:
+        seg_len = dash_len if draw else gap_len
+        nx = x1 + dx * min(dist + seg_len, length)
+        ny = y1 + dy * min(dist + seg_len, length)
+        if draw:
+            line(
+                img,
+                (int(x1 + dx * dist), int(y1 + dy * dist)),
+                (int(nx), int(ny)),
+                color,
+                thickness,
+            )
+        dist += seg_len
+        draw = not draw
+
+def dashed_rectangle(img, tl, br, color, thickness=1, gap_len=4):
+    x1, y1 = tl
+    x2, y2 = br
+    dashed_line(img, (x1, y1), (x2, y1), color, thickness, gap_len=gap_len)
+    dashed_line(img, (x2, y1), (x2, y2), color, thickness, gap_len=gap_len)
+    dashed_line(img, (x2, y2), (x1, y2), color, thickness, gap_len=gap_len)
+    dashed_line(img, (x1, y2), (x1, y1), color, thickness, gap_len=gap_len)
+
+
+def visualize_gt_vs_pred(
+    results: Results,
+    cls: int
+):
+    img = results.orig_img.copy()
+    h, w = results.orig_shape
+
+    # ---- Draw GT (green) ----
+    for ann in truth_for_results(results):
+        if ann.cls != cls:
+            continue
+        box: Box = annotation_to_box(ann, w, h)
+        rectangle(img, (int(box.tl.x), int(box.tl.y)), (int(box.br.x), int(box.br.y)), (0, 200, 0), 2)
+
+    # ---- Draw predictions (red, dashed-ish) ----
+    offset = 0
+    for box in results.boxes:
+        if int(box.cls.item()) != cls:
+            continue
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        conf = float(box.conf)
+
+        dashed_rectangle(img, (x1, y1), (x2, y2), (0, 0, 200), 2, gap_len=6)
+        putText(
+            img,
+            f"{conf:.2f}",
+            (x1 + offset, y1 - 4),
+            FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 200),
+            1,
+            LINE_AA,
+        )
+        offset += 40
+
+    name = Path(results.path).with_suffix('').name
+    filename = f"{name}.jpg"
+    target_dir = Path(results.save_dir) / 'visualization'
+    target_dir.mkdir(parents=True, exist_ok=True)
+    imwrite(target_dir / filename, img)
+
+
+def visualize_worst(model, worst, cls: int):
+    paths = [d.path for d in worst]
+    results = model.predict(
+        paths,
+        show=False,
+        stream=True,
+        save=False,
+        verbose=False,
+    )
+
+    for r in results:
+        if not r.save_dir:
+            r.save_dir = '/tmp/'
+        visualize_gt_vs_pred(
+            r,
+            cls=cls
+        )
+
 root = Path('data/images')
 images = chain((root / 'Train').glob('*.png'), (root / 'Val').glob('*.png') )
-model = YOLO("runs/detect/train20/weights/best.pt")
-worst = nlargest(20, files_to_errors(list(images)), lambda x: x.error)
+model = YOLO("runs/detect/train21/weights/best.pt")
+worst = nlargest(30, files_to_errors(list(images)), lambda x: x.error)
 worst.sort(key = lambda x: x.error)
 for i in worst:
     print(i)
 
-reannotate(map(lambda x: x.path, worst))
+visualize_worst(model, worst, 0)
+#reannotate(map(lambda x: x.path, worst))

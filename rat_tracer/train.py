@@ -11,8 +11,8 @@ def print_rss_after_epoch(trainer):
     print(f"Epoch {trainer.epoch + 1}: RSS memory = {rss:.2f} MB, VMS memory = {vms:.2f} MB")
 
 # Load a model
-model = YOLO("runs/detect/train20/weights/last.pt")
+model = YOLO("runs/detect/train22/weights/last.pt")
 
 model.add_callback("on_train_epoch_end", print_rss_after_epoch)
 
-model.train(data="data/data.yaml", epochs=70, imgsz=640, device="mps", workers=2, resume=True)
+model.train(data="data/data.yaml", epochs=70, imgsz=640, device="mps", workers=2, dfl=10., resume=False)

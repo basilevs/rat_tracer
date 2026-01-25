@@ -1,10 +1,12 @@
+from dataclasses import dataclass
+from itertools import zip_longest
 from pathlib import Path
 from os import mkdir
 from numpy import frombuffer, uint8
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train18/weights/best.pt")
+from lib import Box, Point
 
 LABYRINTH_CLASS = 2
 
@@ -12,6 +14,26 @@ LABYRINTH_CLASS = 2
 EDGE_MARGIN = 0.02
 LABYRINTH_MARGIN = 0.1
 
+@dataclass
+class Prediction:
+    cls: int
+    box: Box
+    conf: float
+    track: int | None
+
+
+class Predictions:
+    def __init__(self, results: Results):
+        self._predictions: list[Prediction] = []
+        for box, cls, conf, track in zip_longest(results.boxes.xyxy.tolist(),
+            results.boxes.cls.tolist(),results.boxes.conf.tolist(), results.boxes.id.tolist()):
+            self._predictions.append(Prediction(int(cls), Box(Point(box[0], box[1]), Point(box[2], box[3])), conf, int(track)))
+
+    def by_track(self, track_id: int) -> Prediction:
+        return next(p for p in self._predictions if p.track == track_id)
+    
+    def by_class(self, cls: int) -> list[Prediction]:
+        return [p for p in self._predictions if p.cls == cls]
 
 def save_result(idx: int, results: Results):
     height, width = results.orig_shape
@@ -93,14 +115,16 @@ def track_set(results: Results) -> set[float]:
 
 def main():
     previous_result: Results = None
+    model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train23/weights/best.pt")
 
     stream = model.track(
-        'input/2025-10-12.mp4',
+        'input/2026-01-15-2.mp4',
         show=True,
         conf=0.1,
         stream=True,
         save_txt=False,
         save=True,
+        nms=True,
         verbose=False,
         tracker="botsort.yaml"
     )
@@ -115,18 +139,17 @@ def main():
 
         lost = current_tracks.difference(found)
 
-        labyrinth_norm = extract_labyrinth_box(results)
-
         if lost and previous_result is not None:
+            previous_predictions = Predictions(previous_result)
             for tid in lost:
-                box_norm = find_box_for_track(previous_result, tid)
-                if box_norm is None:
+                lost_prediction = previous_predictions.by_track(tid)
+                if lost_prediction.cls != 0: # consider only rats
                     continue
 
-                if near_image_edge_norm(box_norm, EDGE_MARGIN):
-                    continue
-
-                if near_border(box_norm, labyrinth_norm, LABYRINTH_MARGIN):
+                # rat is expected to exit through ports and to be occluded by humans
+                ports = previous_predictions.by_class(3)
+                humans = previous_predictions.by_class(1)
+                if any(b.box.near(lost_prediction.box, 5) for b in [*ports, *humans]):
                     continue
 
                 save_result(idx - 1, previous_result)
