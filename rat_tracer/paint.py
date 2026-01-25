@@ -1,11 +1,13 @@
-import numpy as np
+from platform import system
 from pathlib import Path
-from cv2 import VideoCapture, VideoWriter, VideoWriter_fourcc, CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT, CAP_PROP_FPS
+import numpy as np
+from cv2 import VideoCapture, VideoWriter, VideoWriter_fourcc, CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT, CAP_PROP_FPS, circle
 from ultralytics import YOLO
 from rat_tracer.lib import best_model_path
 
 RAT_CLASS = 0
 ALPHA = 0.35
+MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
 
 def main(
@@ -24,14 +26,17 @@ def main(
     finally:
         cap.release()
 
+    suffix, fourcc = (".mp4", "avc1") if MACOS else (".avi", "WMV2") if WINDOWS else (".avi", "MJPG")
+
     writer = VideoWriter(
-        str(output_video.as_posix()),
-        VideoWriter_fourcc(*"mp4v"),
+        str(output_video.with_suffix(suffix)),
+        VideoWriter_fourcc(*fourcc),
         fps,
         (width, height),
     )
 
     visited = np.zeros((height, width), dtype=np.uint8)
+    radius = max(1, int(0.01 * width))
 
     # Use tracker; persist=True keeps internal state
     results_stream = model.track(
@@ -62,7 +67,16 @@ def main(
                 x2 = min(w - 1, x2)
                 y2 = min(h - 1, y2)
 
-                visited[y1:y2, x1:x2] = 255
+                cx = int((x1 + x2) / 2)
+                cy = int((y1 + y2) / 2)
+
+                circle(
+                    visited,
+                    (cx, cy),
+                    radius,
+                    255,
+                    thickness=-1,
+                )
 
         mask_bool = visited.astype(bool)
         img[mask_bool] = (
