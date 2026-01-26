@@ -1,7 +1,23 @@
 from platform import system
 from pathlib import Path
-import numpy as np
-from cv2 import VideoCapture, VideoWriter, VideoWriter_fourcc, CAP_PROP_FRAME_WIDTH, CAP_PROP_FRAME_HEIGHT, CAP_PROP_FPS, circle
+
+from numpy import zeros, uint8
+from numpy import ndarray
+
+from cv2 import (
+    VideoCapture,
+    VideoWriter,
+    VideoWriter_fourcc,
+    CAP_PROP_FRAME_WIDTH,
+    CAP_PROP_FRAME_HEIGHT,
+    CAP_PROP_FPS,
+    createBackgroundSubtractorMOG2,
+    cvtColor,
+    COLOR_BGR2GRAY,
+    morphologyEx,
+    MORPH_OPEN,
+)
+
 from ultralytics import YOLO
 from rat_tracer.lib import best_model_path
 
@@ -26,7 +42,11 @@ def main(
     finally:
         cap.release()
 
-    suffix, fourcc = (".mp4", "avc1") if MACOS else (".avi", "WMV2") if WINDOWS else (".avi", "MJPG")
+    suffix, fourcc = (
+        (".mp4", "avc1") if MACOS
+        else (".avi", "WMV2") if WINDOWS
+        else (".avi", "MJPG")
+    )
 
     writer = VideoWriter(
         str(output_video.with_suffix(suffix)),
@@ -35,10 +55,14 @@ def main(
         (width, height),
     )
 
-    visited = np.zeros((height, width), dtype=np.uint8)
-    radius = max(1, int(0.01 * width))
+    visited: ndarray = zeros((height, width), dtype=uint8)
 
-    # Use tracker; persist=True keeps internal state
+    mog = createBackgroundSubtractorMOG2(
+        history=500,
+        varThreshold=16,
+        detectShadows=False,
+    )
+
     results_stream = model.track(
         source=str(input_video),
         conf=0.25,
@@ -48,12 +72,14 @@ def main(
         show=True,
     )
 
-    frame_idx = 0
-    red = np.zeros((height, width, 3), np.uint8)
+    red = zeros((height, width, 3), dtype=uint8)
     red[:, :, 2] = 255
+
+    frame_idx = 0
 
     for results in results_stream:
         img = results.orig_img
+        gray = cvtColor(img, COLOR_BGR2GRAY)
         h, w = results.orig_shape
 
         if results.boxes is not None:
@@ -64,30 +90,35 @@ def main(
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 x1 = max(0, x1)
                 y1 = max(0, y1)
-                x2 = min(w - 1, x2)
-                y2 = min(h - 1, y2)
+                x2 = min(w, x2)
+                y2 = min(h, y2)
 
-                cx = int((x1 + x2) / 2)
-                cy = int((y1 + y2) / 2)
+                if x2 <= x1 or y2 <= y1:
+                    continue
 
-                circle(
-                    visited,
-                    (cx, cy),
-                    radius,
-                    255,
-                    thickness=-1,
+                roi = gray[y1:y2, x1:x2]
+
+                fg = mog.apply(roi)
+
+                fg = morphologyEx(
+                    fg,
+                    MORPH_OPEN,
+                    zeros((3, 3), dtype=uint8),
                 )
 
-        mask_bool = visited.astype(bool)
-        img[mask_bool] = (
-            img[mask_bool] * (1 - ALPHA) +
-            red[mask_bool] * ALPHA
-        ).astype(np.uint8)
+                visited[y1:y2, x1:x2][fg > 0] = 255
+
+        mask = visited.astype(bool)
+        img[mask] = (
+            img[mask] * (1 - ALPHA) +
+            red[mask] * ALPHA
+        ).astype(uint8)
 
         writer.write(img)
+
         frame_idx += 1
-        if not frame_idx % 100:
-            print('Frame', frame_idx)
+        if frame_idx % 100 == 0:
+            print("Frame", frame_idx)
 
     writer.release()
     print(f"Processed {frame_idx} frames")
