@@ -3,6 +3,8 @@ from psutil import Process
 
 from ultralytics import YOLO
 
+from lib import best_model_path
+
 # Callback: print resident set size (RSS) memory
 def print_rss_after_epoch(trainer):
     m = Process().memory_info()
@@ -11,7 +13,7 @@ def print_rss_after_epoch(trainer):
     print(f"Epoch {trainer.epoch + 1}: RSS memory = {rss:.2f} MB, VMS memory = {vms:.2f} MB")
 
 # Load a model
-model = YOLO("runs/detect/train24/weights/last.pt")
+model = YOLO(best_model_path)
 
 model.add_callback("on_train_epoch_end", print_rss_after_epoch)
 
