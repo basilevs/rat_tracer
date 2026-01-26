@@ -13,6 +13,11 @@ def split_dataset(
     images_src = gt_dir / "images"
     labels_src = gt_dir / "labels"
 
+    if not labels_src.is_dir():
+        labels_src = images_src / "annotations"
+
+    assert labels_src.is_dir()
+
     images = sorted(images_src.glob("*"))
     images = [p for p in images if p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
 

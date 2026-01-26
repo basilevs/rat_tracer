@@ -2,11 +2,12 @@ from dataclasses import dataclass
 from itertools import zip_longest
 from pathlib import Path
 from os import mkdir
+from sys import argv
 from numpy import frombuffer, uint8
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from lib import Box, Point
+from lib import Box, Point, best_model_path
 
 LABYRINTH_CLASS = 2
 
@@ -116,13 +117,13 @@ def track_set(results: Results) -> set[float]:
 def on_predict_postprocess_end(results):
     pass
 
-def main():
+def main(input_video: Path):
     previous_result: Results = None
-    model = YOLO("/Users/vasiligulevich/git/rat_tracer/runs/detect/train24/weights/best.pt")
+    model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", on_predict_postprocess_end)
 
     stream = model.track(
-        'input/2026-01-15-2.mp4',
+        input_video,
         show=True,
         conf=0.1,
         stream=True,
@@ -156,7 +157,7 @@ def main():
                 if any(b.box.near(lost_prediction.box, 5) for b in [*ports, *humans]):
                     continue
 
-                save_result(idx - 1, previous_result)
+                #save_result(idx - 1, previous_result)
                 save_result(idx, results)
                 print(f"Frame {idx} has mined track loss: {tid}")
                 break  # save each frame only once
@@ -166,4 +167,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(argv[1])

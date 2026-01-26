@@ -29,9 +29,15 @@ RAT_CLASS = 0
 ALPHA = 0.35
 MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
-
 def main(input_video: Path, output_video: Path):
     model = YOLO(best_model_path)
+
+    if not output_video:
+        raise ValueError('Output argument is missing')
+    if output_video.is_dir():
+        output_video = output_video / input_video.with_suffix('').name
+    if output_video.with_suffix('') == input_video.with_suffix(''):
+        output_video = input_video.parent / (input_video.with_suffix('').name + '_painted')
 
     cap = VideoCapture(str(input_video))
     try:
@@ -43,12 +49,16 @@ def main(input_video: Path, output_video: Path):
 
     suffix, fourcc = (".mp4", "avc1") if MACOS else (".avi", "WMV2") if WINDOWS else (".avi", "MJPG")
 
+    output_video = output_video.with_suffix(suffix)
     writer = VideoWriter(
         str(output_video.with_suffix(suffix)),
         VideoWriter_fourcc(*fourcc),
         fps,
         (width, height),
     )
+
+    if not writer.isOpened():
+        raise ValueError("Can't write to " + str(output_video))
 
     visited: ndarray = zeros((height, width), dtype=uint8)
 
@@ -64,7 +74,7 @@ def main(input_video: Path, output_video: Path):
         persist=True,
         stream=True,
         verbose=False,
-        show=False,   # ← removed
+        show=False,
     )
 
     red = zeros((height, width, 3), dtype=uint8)
@@ -102,7 +112,7 @@ def main(input_video: Path, output_video: Path):
         img[mask] = (
             img[mask] * (1 - ALPHA) +
             red[mask] * ALPHA
-        ).astype(uint8)
+        )
 
         writer.write(img)
 
@@ -113,10 +123,10 @@ def main(input_video: Path, output_video: Path):
 
 
         if frame_idx % 100 == 0:
-            print("Frame", frame_idx)
+            print("\rFrame", frame_idx, end='')
 
     writer.release()
-    print("Done")
+    print("Saved to " + str(output_video))
 
 
 if __name__ == "__main__":
