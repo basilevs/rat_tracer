@@ -1,10 +1,11 @@
 from platform import system
 from pathlib import Path
 
-from numpy import zeros, uint8
+from numpy import ones, zeros, uint8
 from numpy import ndarray
 
 from cv2 import (
+    MORPH_ELLIPSE,
     VideoCapture,
     VideoWriter,
     VideoWriter_fourcc,
@@ -14,6 +15,7 @@ from cv2 import (
     createBackgroundSubtractorMOG2,
     cvtColor,
     COLOR_BGR2GRAY,
+    getStructuringElement,
     morphologyEx,
     MORPH_OPEN,
     imshow,
@@ -68,12 +70,10 @@ def main(input_video: Path, output_video: Path):
     red = zeros((height, width, 3), dtype=uint8)
     red[:, :, 2] = 255
 
-    preview = zeros((height, width), dtype=uint8)
-
+    open_kernel = getStructuringElement(MORPH_ELLIPSE,(5,5))
     for frame_idx, results in enumerate(results_stream):
         img = results.orig_img
 
-        preview[:] = 0
         fg = mog.apply(img)
         if results.boxes is not None:
             for box in results.boxes:
@@ -94,7 +94,7 @@ def main(input_video: Path, output_video: Path):
                 roi = morphologyEx(
                     roi,
                     MORPH_OPEN,
-                    zeros((3, 3), dtype=uint8),
+                    open_kernel,
                 )
                 visited[y1:y2, x1:x2][roi > 0] = 255
 
