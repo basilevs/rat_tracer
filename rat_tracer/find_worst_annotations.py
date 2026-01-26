@@ -9,12 +9,12 @@ from shutil import copy2
 from os import makedirs
 from typing import Iterator, TypeVar
 
-from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line
+from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
 
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from rat_tracer.lib import Annotation, Point, Box, read_annotations
+from rat_tracer.lib import Annotation, Point, Box, read_annotations, best_model_path
 
 
 T = TypeVar("T")
@@ -134,7 +134,7 @@ class Datum:
         return f"{self.path}: {self.error}"
 
 
-def files_to_errors(files: list[Path]) -> Iterator[Datum]: 
+def files_to_errors(files: list[Path]) -> Iterator[Datum]:
     for result in model.predict(list(files), show=False, stream=True, save_txt=False, save=False, verbose=True):
         path = Path(result.path)
         error: float = result_error(result, 0)
@@ -233,6 +233,8 @@ def visualize(model, worst, cls: int):
     for r in results:
         if not r.save_dir:
             r.save_dir = '/tmp/'
+        if waitKey(1) == 27:
+            break
         visualize_gt_vs_pred(
             r,
             cls=cls
@@ -241,7 +243,7 @@ def visualize(model, worst, cls: int):
 root = Path('data/images')
 images = chain((root / 'Train').glob('*.png'), (root / 'Val').glob('*.png') )
 #images = [Path('data/images/Train/2026-01-15-2_000356.png')]
-model = YOLO("runs/detect/train24/weights/best.pt")
+model = YOLO(best_model_path)
 worst = nlargest(30, files_to_errors(list(images)), lambda x: x.error)
 worst.sort(key = lambda x: x.error)
 for i in worst:
