@@ -16,6 +16,8 @@ from cv2 import (
     COLOR_BGR2GRAY,
     morphologyEx,
     MORPH_OPEN,
+    imshow,
+    waitKey,
 )
 
 from ultralytics import YOLO
@@ -26,27 +28,18 @@ ALPHA = 0.35
 MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
 
-def main(
-    input_video: Path,
-    output_video: Path,
-):
+def main(input_video: Path, output_video: Path):
     model = YOLO(best_model_path)
 
     cap = VideoCapture(str(input_video))
     try:
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open {input_video}")
         width = int(cap.get(CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(CAP_PROP_FPS)
     finally:
         cap.release()
 
-    suffix, fourcc = (
-        (".mp4", "avc1") if MACOS
-        else (".avi", "WMV2") if WINDOWS
-        else (".avi", "MJPG")
-    )
+    suffix, fourcc = (".mp4", "avc1") if MACOS else (".avi", "WMV2") if WINDOWS else (".avi", "MJPG")
 
     writer = VideoWriter(
         str(output_video.with_suffix(suffix)),
@@ -69,19 +62,19 @@ def main(
         persist=True,
         stream=True,
         verbose=False,
-        show=True,
+        show=False,   # ← removed
     )
 
     red = zeros((height, width, 3), dtype=uint8)
     red[:, :, 2] = 255
 
-    frame_idx = 0
+    preview = zeros((height, width), dtype=uint8)
 
-    for results in results_stream:
+    for frame_idx, results in enumerate(results_stream):
         img = results.orig_img
-        gray = cvtColor(img, COLOR_BGR2GRAY)
-        h, w = results.orig_shape
 
+        preview[:] = 0
+        fg = mog.apply(img)
         if results.boxes is not None:
             for box in results.boxes:
                 if int(box.cls.item()) != RAT_CLASS:
@@ -90,23 +83,20 @@ def main(
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 x1 = max(0, x1)
                 y1 = max(0, y1)
-                x2 = min(w, x2)
-                y2 = min(h, y2)
+                x2 = min(width, x2)
+                y2 = min(height, y2)
 
                 if x2 <= x1 or y2 <= y1:
                     continue
 
-                roi = gray[y1:y2, x1:x2]
+                roi = fg[y1:y2, x1:x2]
 
-                fg = mog.apply(roi)
-
-                fg = morphologyEx(
-                    fg,
+                roi = morphologyEx(
+                    roi,
                     MORPH_OPEN,
                     zeros((3, 3), dtype=uint8),
                 )
-
-                visited[y1:y2, x1:x2][fg > 0] = 255
+                visited[y1:y2, x1:x2][roi > 0] = 255
 
         mask = visited.astype(bool)
         img[mask] = (
@@ -116,22 +106,23 @@ def main(
 
         writer.write(img)
 
-        frame_idx += 1
+        # ---- streaming debug preview ----
+        imshow("MOG foreground (ROI only)", img)
+        if waitKey(1) == 27:  # ESC
+            break
+
+
         if frame_idx % 100 == 0:
             print("Frame", frame_idx)
 
     writer.release()
-    print(f"Processed {frame_idx} frames")
+    print("Done")
 
 
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) != 3:
-        print("Usage: paint_rat_coverage_track.py input.mp4 output.mp4")
-        raise SystemExit(1)
+        raise SystemExit("Usage: paint_rat_coverage_track.py input.mp4 output.mp4")
 
-    main(
-        Path(sys.argv[1]),
-        Path(sys.argv[2]),
-    )
+    main(Path(sys.argv[1]), Path(sys.argv[2]))
