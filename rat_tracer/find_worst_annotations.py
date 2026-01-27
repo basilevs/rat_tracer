@@ -14,44 +14,8 @@ from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from rat_tracer.lib import Annotation, Point, Box, annotation_to_box, box_iou, read_annotations, best_model_path, truth_for_results, visualize_gt_vs_pred
+from rat_tracer.lib import Point, Box, Prediction, annotation_to_box, box_error, box_iou, nms_callback, pop_minimum, best_model_path, truth_for_results, visualize_gt_vs_pred
 
-
-T = TypeVar("T")
-
-@dataclass
-class Prediction:
-    box: Box
-    confidence: float
-
-EMPTY_PREDICTION = Prediction(Box(Point(0, 0), Point(0, 0)), 0.)
-def box_error(truth: Prediction, prediction: Prediction) -> float:
-    prediction = prediction or EMPTY_PREDICTION
-    truth = truth or EMPTY_PREDICTION
-    intersection_area = truth.box.intersection_area(prediction.box)
-    assert intersection_area >= 0
-    difference_area = prediction.box.area + truth.box.area - intersection_area
-    assert difference_area >= 0
-    result = (prediction.box.area - intersection_area) * prediction.confidence + (truth.box.area - intersection_area) * truth.confidence + intersection_area * abs(truth.confidence - prediction.confidence)
-    result /= difference_area
-    assert result >= 0.
-    return result
-
-def pop_minimum(items: list[T], key: Callable[[T], float]) -> T | None:
-    """Find, remove and return the element with minimal key(input[i])."""
-    if not items:
-        return None
-
-    min_idx = 0
-    min_val = key(items[0])
-
-    for i in range(1, len(items)):
-        v = key(items[i])
-        if v < min_val:
-            min_val = v
-            min_idx = i
-
-    return items.pop(min_idx)
 
 def pop_nearest(boxes:list[Prediction], to_find: Box) -> Box | None:
     def distance(box:Prediction):
@@ -80,11 +44,11 @@ def result_error(results: Results, cls: int) -> float:
         if int(box.cls.item()) != cls:
             continue
         x1, y1, x2, y2 = map(float, box.xyxy[0])
-        prediction.append(Prediction(Box(Point(x1, y1), Point(x2, y2)), float(box.conf)))
+        prediction.append(Prediction(cls, Box(Point(x1, y1), Point(x2, y2)), float(box.conf)))
     annotations = list(x for x in truth_for_results(results) if x.cls == cls)
     height, width = results.orig_shape
     truth = [annotation_to_box(b, width, height) for b in annotations]
-    return boxes_error(list(Prediction(x, 1.) for x in truth), prediction)
+    return boxes_error(list(Prediction(cls, x, 1.) for x in truth), prediction)
 
 def reannotate(files: list[Path]):
     model.predict(list(files), show=True, stream=False, save_txt=True, save=True, verbose=True)
@@ -135,7 +99,7 @@ def visualize(model, worst, cls: int):
         paths,
         show=True,
         stream=True,
-        save=False,
+        save=True,
         verbose=False,
     )
 
@@ -150,9 +114,10 @@ def visualize(model, worst, cls: int):
         )
 
 root = Path('data/images')
-images = chain(root.rglob('*.png'),  root.rglob('*.jpeg'), root.rglob('*.jpg'))
+images = chain(*[root.rglob(pattern) for pattern in ['*.jpeg', '*.png', '*.jpg']])
 #images = [Path('data/images/Train/2026-01-15-2_000356.png')]
 model = YOLO(best_model_path)
+model.add_callback("on_predict_postprocess_end", nms_callback)
 worst = nlargest(30, files_to_errors(list(images)), lambda x: x.error)
 worst.sort(key = lambda x: x.error)
 for i in worst:

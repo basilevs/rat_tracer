@@ -21,15 +21,16 @@ def visualize(images:Iterator[Path], cls: int):
         assert i.is_file()
     results = model.predict(
         list(l),
-        show=True,
+        show=False,
         stream=True,
         save=False,
-        verbose=False,
+        verbose=True,
     )
 
     for r in results:
         img = visualize_gt_vs_pred(r, cls)
-        imshow(r.path, img)
+        imshow("Ground truth and prediction", img)
+        print(r.path)
         while True:
             key = waitKey(100)
             if key == 32: #Space

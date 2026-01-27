@@ -1,11 +1,13 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Self
+from typing import Iterator, Self, TypeVar
 
 from numpy import ndarray
 
 from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
 
+from torch import tensor
 from ultralytics.engine.results import Results
 
 best_model_path=Path('runs/detect/train26/weights/best.pt')
@@ -97,6 +99,66 @@ def label_path_from_image(image: Path) -> Path:
         relative = image.relative_to(root).with_suffix('.txt')
         return root.parent / 'labels' / relative
 
+@dataclass
+class Prediction:
+    cls: int
+    box: Box
+    confidence: float
+
+EMPTY_PREDICTION = Prediction(0, Box(Point(0, 0), Point(0, 0)), 0.)
+def box_error(truth: Prediction, prediction: Prediction) -> float:
+    prediction = prediction or EMPTY_PREDICTION
+    truth = truth or EMPTY_PREDICTION
+    intersection_area = truth.box.intersection_area(prediction.box)
+    assert intersection_area >= 0
+    total_area = prediction.box.area + truth.box.area - intersection_area
+    assert total_area >= 0
+    result = (prediction.box.area - intersection_area) * prediction.confidence + (truth.box.area - intersection_area) * truth.confidence + intersection_area * abs(truth.confidence - prediction.confidence)
+    result /= total_area
+    assert result >= 0.
+    return result
+
+T = TypeVar("T")
+
+def pop_minimum(items: list[T], key: Callable[[T], float]) -> T | None:
+    """Find, remove and return the element with minimal key(input[i])."""
+    if not items:
+        return None
+
+    min_idx = 0
+    min_val = key(items[0])
+
+    for i in range(1, len(items)):
+        v = key(items[i])
+        if v < min_val:
+            min_val = v
+            min_idx = i
+
+    return items.pop(min_idx)
+
+def nms(
+    predictions: list[Prediction],
+    iou_threshold: float = 0.5,
+) -> list[Prediction]:
+    if not predictions:
+        return []
+
+    # sort by confidence descending
+    preds = sorted(predictions, key=lambda p: p.confidence, reverse=True)
+    kept: list[Prediction] = []
+
+    while preds:
+        best = preds.pop(0)
+        kept.append(best)
+
+        preds = [
+            p for p in preds
+            if box_iou(best.box, p.box) < iou_threshold
+        ]
+
+    return kept
+
+
 def dashed_line(img, p1, p2, color, thickness=1, dash_len=6, gap_len=4):
     x1, y1 = p1
     x2, y2 = p2
@@ -166,3 +228,71 @@ def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
             LINE_AA,
         )
     return img
+
+def nms_callback(predictor):
+    import torch
+    from collections import defaultdict
+
+    for r in predictor.results:
+        if r.boxes is None or len(r.boxes) == 0:
+            continue
+
+        boxes = r.boxes
+        device = boxes.xyxy.device
+
+        # ---- collect predictions per class ----
+        by_class: dict[int, list[Prediction]] = defaultdict(list)
+
+        for i in range(len(boxes)):
+            cls = int(boxes.cls[i].item())
+            by_class[cls].append(
+                Prediction(
+                    cls=cls,
+                    box=Box(
+                        Point(float(boxes.xyxy[i, 0]), float(boxes.xyxy[i, 1])),
+                        Point(float(boxes.xyxy[i, 2]), float(boxes.xyxy[i, 3])),
+                    ),
+                    confidence=float(boxes.conf[i]),
+                )
+            )
+
+        # ---- apply NMS per class ----
+        kept: list[Prediction] = []
+        for cls, preds in by_class.items():
+            kept.extend(nms(preds, iou_threshold=0.25))
+
+        if not kept:
+            r.boxes = None
+            continue
+
+        # ---- rebuild Boxes ----
+        xyxy = torch.tensor(
+            [
+                [
+                    p.box.tl.x,
+                    p.box.tl.y,
+                    p.box.br.x,
+                    p.box.br.y,
+                ]
+                for p in kept
+            ],
+            device=device,
+        )
+
+        conf = torch.tensor(
+            [p.confidence for p in kept],
+            device=device,
+        )
+
+        cls = torch.tensor(
+            [p.cls for p in kept],
+            device=device,
+            dtype=boxes.cls.dtype,
+        )
+
+        r.boxes = boxes.__class__(
+            xyxy=xyxy,
+            conf=conf,
+            cls=cls,
+            orig_shape=r.orig_shape,
+        )
