@@ -1,5 +1,7 @@
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import zip_longest
 from pathlib import Path
 from typing import Iterator, Self, TypeVar
 
@@ -7,8 +9,9 @@ from numpy import ndarray
 
 from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
 
-from torch import tensor
+from torch import Tensor, float32, tensor
 from ultralytics.engine.results import Results, Boxes
+from ultralytics.engine.predictor import BasePredictor
 
 best_model_path=Path('runs/detect/train26/weights/best.pt')
 
@@ -99,13 +102,40 @@ def label_path_from_image(image: Path) -> Path:
         relative = image.relative_to(root).with_suffix('.txt')
         return root.parent / 'labels' / relative
 
+
 @dataclass
 class Prediction:
     cls: int
     box: Box
     confidence: float
+    track: int | None
 
-EMPTY_PREDICTION = Prediction(0, Box(Point(0, 0), Point(0, 0)), 0.)
+
+class Predictions:
+    def __init__(self, results: Results):
+        self._predictions: list[Prediction] = []
+        boxes = results.boxes
+        for i in range(len(boxes)):
+            cls = int(boxes.cls[i].item())
+            self._predictions.append(
+                Prediction(
+                    cls=cls,
+                    box=Box(
+                        Point(float(boxes.xyxy[i, 0]), float(boxes.xyxy[i, 1])),
+                        Point(float(boxes.xyxy[i, 2]), float(boxes.xyxy[i, 3])),
+                    ),
+                    confidence=float(boxes.conf[i]),
+                    track=int(boxes.id[i]) if boxes.id else None
+                )
+            )
+
+    def by_track(self, track_id: int) -> Prediction:
+        return next(p for p in self._predictions if p.track == track_id)
+    
+    def by_class(self, cls: int) -> list[Prediction]:
+        return [p for p in self._predictions if p.cls == cls]
+    
+EMPTY_PREDICTION = Prediction(0, Box(Point(0, 0), Point(0, 0)), 0., None)
 def box_error(truth: Prediction, prediction: Prediction) -> float:
     prediction = prediction or EMPTY_PREDICTION
     truth = truth or EMPTY_PREDICTION
@@ -229,87 +259,70 @@ def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
         )
     return img
 
-def nms_callback(predictor):
-    import torch
-    from collections import defaultdict
+def nms_callback(predictor: BasePredictor):
 
     for r in predictor.results:
         if r.boxes is None or len(r.boxes) == 0:
             continue
 
-        boxes = r.boxes
+        boxes:Boxes = r.boxes
         device = boxes.xyxy.device
 
         # ---- collect predictions per class ----
         by_class: dict[int, list[Prediction]] = defaultdict(list)
 
-        for i in range(len(boxes)):
-            cls = int(boxes.cls[i].item())
-            by_class[cls].append(
-                Prediction(
-                    cls=cls,
-                    box=Box(
-                        Point(float(boxes.xyxy[i, 0]), float(boxes.xyxy[i, 1])),
-                        Point(float(boxes.xyxy[i, 2]), float(boxes.xyxy[i, 3])),
-                    ),
-                    confidence=float(boxes.conf[i]),
-                )
-            )
+        predictions = Predictions(r)
+
+        for i in predictions._predictions:
+            by_class[i.cls].append(i)
 
         # ---- apply NMS per class ----
         kept: list[Prediction] = []
-        for cls, preds in by_class.items():
+        for _, preds in by_class.items():
             kept.extend(nms(preds, iou_threshold=0.25))
 
         if not kept:
             r.boxes = None
             continue
 
-        # ---- rebuild Boxes ----
-        xyxy = torch.tensor(
+        r.boxes = Boxes(build_boxes_tensor(kept, device), r.orig_shape)
+
+def build_boxes_tensor(
+    preds: list[Prediction],
+    device,
+) -> Tensor:
+    has_id = preds and preds[0].track is not None
+    dtype = float32
+    if has_id:
+        return tensor(
             [
                 [
                     p.box.tl.x,
                     p.box.tl.y,
                     p.box.br.x,
                     p.box.br.y,
+                    p.track,
+                    p.confidence,
+                    p.cls,
                 ]
-                for p in kept
+                for p in preds
             ],
             device=device,
+            dtype=dtype,
         )
-
-        conf = torch.tensor(
-            [p.confidence for p in kept],
-            device=device,
-        )
-
-        cls = torch.tensor(
-            [p.cls for p in kept],
-            device=device,
-            dtype=boxes.cls.dtype,
-        )
-
-        ids = boxes.id  # shape (N,) or None
-
-        if ids is not None:
-            boxes_tensor = torch.cat(
+    else:
+        return tensor(
+            [
                 [
-                    xyxy,
-                    ids[:, None].float(),
-                    conf[:, None],
-                    cls[:, None],
-                ],
-                dim=1,
-            )
-        else:
-            boxes_tensor = torch.cat(
-                [
-                    xyxy,
-                    conf[:, None],
-                    cls[:, None],
-                ],
-                dim=1,
-            )
-
-        r.boxes = Boxes(boxes_tensor, r.orig_shape)
+                    p.box.tl.x,
+                    p.box.tl.y,
+                    p.box.br.x,
+                    p.box.br.y,
+                    p.confidence,
+                    p.cls,
+                ]
+                for p in preds
+            ],
+            device=device,
+            dtype=dtype,
+        )

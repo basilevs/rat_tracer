@@ -7,7 +7,7 @@ from numpy import frombuffer, uint8
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from lib import Box, Point, best_model_path
+from lib import Box, Point, Predictions, best_model_path, nms_callback
 
 LABYRINTH_CLASS = 2
 
@@ -15,26 +15,6 @@ LABYRINTH_CLASS = 2
 EDGE_MARGIN = 0.02
 LABYRINTH_MARGIN = 0.1
 
-@dataclass
-class Prediction:
-    cls: int
-    box: Box
-    conf: float
-    track: int | None
-
-
-class Predictions:
-    def __init__(self, results: Results):
-        self._predictions: list[Prediction] = []
-        for box, cls, conf, track in zip_longest(results.boxes.xyxy.tolist(),
-            results.boxes.cls.tolist(),results.boxes.conf.tolist(), results.boxes.id.tolist()):
-            self._predictions.append(Prediction(int(cls), Box(Point(box[0], box[1]), Point(box[2], box[3])), conf, int(track)))
-
-    def by_track(self, track_id: int) -> Prediction:
-        return next(p for p in self._predictions if p.track == track_id)
-    
-    def by_class(self, cls: int) -> list[Prediction]:
-        return [p for p in self._predictions if p.cls == cls]
 
 def save_result(idx: int, results: Results):
     height, width = results.orig_shape
@@ -117,6 +97,7 @@ def track_set(results: Results) -> set[float]:
 def main(input_video: Path):
     previous_result: Results = None
     model = YOLO(best_model_path)
+    model.add_callback("on_predict_postprocess_end", nms_callback)
 
     stream = model.track(
         input_video,

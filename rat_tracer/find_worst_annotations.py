@@ -44,14 +44,14 @@ def result_error(results: Results, cls: int) -> float:
         if int(box.cls.item()) != cls:
             continue
         x1, y1, x2, y2 = map(float, box.xyxy[0])
-        prediction.append(Prediction(cls, Box(Point(x1, y1), Point(x2, y2)), float(box.conf)))
+        prediction.append(Prediction(cls, Box(Point(x1, y1), Point(x2, y2)), float(box.conf), None))
     annotations = list(x for x in truth_for_results(results) if x.cls == cls)
     height, width = results.orig_shape
     truth = [annotation_to_box(b, width, height) for b in annotations]
-    return boxes_error(list(Prediction(cls, x, 1.) for x in truth), prediction)
+    return boxes_error(list(Prediction(cls, x, 1., None) for x in truth), prediction)
 
 def reannotate(files: list[Path]):
-    model.predict(list(files), show=True, stream=False, save_txt=True, save=True, verbose=True)
+    model.predict(list(files), show=False, stream=False, save_txt=True, save=True, verbose=True)
 
 def relabel(files: list[Path]):
     target = Path('/tmp/relabel')
@@ -73,7 +73,7 @@ class Datum:
 
 
 def files_to_errors(files: list[Path]) -> Iterator[Datum]:
-    for result in model.predict(list(files), show=False, stream=True, save_txt=False, save=False, verbose=True):
+    for result in model.predict(list(files), show=False, stream=True, save_txt=False, save=False, verbose=True, batch=1):
         path = Path(result.path)
         error: float = result_error(result, 0)
         result = Datum(error, path)
