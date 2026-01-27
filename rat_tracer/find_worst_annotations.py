@@ -14,7 +14,7 @@ from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from rat_tracer.lib import Annotation, Point, Box, read_annotations, best_model_path
+from rat_tracer.lib import Annotation, Point, Box, annotation_to_box, box_iou, read_annotations, best_model_path, truth_for_results, visualize_gt_vs_pred
 
 
 T = TypeVar("T")
@@ -33,6 +33,7 @@ def box_error(truth: Prediction, prediction: Prediction) -> float:
     difference_area = prediction.box.area + truth.box.area - intersection_area
     assert difference_area >= 0
     result = (prediction.box.area - intersection_area) * prediction.confidence + (truth.box.area - intersection_area) * truth.confidence + intersection_area * abs(truth.confidence - prediction.confidence)
+    result /= difference_area
     assert result >= 0.
     return result
 
@@ -51,14 +52,6 @@ def pop_minimum(items: list[T], key: Callable[[T], float]) -> T | None:
             min_idx = i
 
     return items.pop(min_idx)
-
-def box_iou(a: Box, b: Box) -> float:
-    inter = a.intersection_area(b)
-    if inter <= 0:
-        return 0.0
-    union = a.area + b.area - inter
-    assert union > 0
-    return inter / union
 
 def pop_nearest(boxes:list[Prediction], to_find: Box) -> Box | None:
     def distance(box:Prediction):
@@ -81,25 +74,6 @@ def boxes_error(truth: list[Prediction], prediction: list[Prediction]):
             error += box_error(prediction.pop(), None)
     return error
 
-def label_path_from_image(image: Path) -> Path:
-    root:Path = image
-    while root.name != 'images':
-        root = root.parent
-    relative = image.relative_to(root).with_suffix('.txt')
-    return root.parent / 'labels' / relative
-
-def annotation_to_box(a: Annotation, width: float, height: float) -> Box:
-    cx, cy, w, h = a.coords
-    half_w = w * width / 2
-    half_h = h * height / 2
-    return Box(
-        Point(cx * width - half_w, cy * height - half_h),
-        Point(cx * width + half_w, cy * height + half_h)
-    )
-
-def truth_for_results(results: Results) -> Iterator[Annotation]:
-    return read_annotations(label_path_from_image(Path(results.path)))
-                     
 def result_error(results: Results, cls: int) -> float:
     prediction = []
     for box in results.boxes:
@@ -142,76 +116,11 @@ def files_to_errors(files: list[Path]) -> Iterator[Datum]:
         print(result)
         yield result
 
-def dashed_line(img, p1, p2, color, thickness=1, dash_len=6, gap_len=4):
-    x1, y1 = p1
-    x2, y2 = p2
-    length = ((x2 - x1)**2 + (y2 - y1)**2) ** 0.5
-    if length == 0:
-        return
-
-    dx = (x2 - x1) / length
-    dy = (y2 - y1) / length
-
-    dist = 0.0
-    draw = True
-    while dist < length:
-        seg_len = dash_len if draw else gap_len
-        nx = x1 + dx * min(dist + seg_len, length)
-        ny = y1 + dy * min(dist + seg_len, length)
-        if draw:
-            line(
-                img,
-                (int(x1 + dx * dist), int(y1 + dy * dist)),
-                (int(nx), int(ny)),
-                color,
-                thickness,
-            )
-        dist += seg_len
-        draw = not draw
-
-def dashed_rectangle(img, tl, br, color, thickness=1, gap_len=4):
-    x1, y1 = tl
-    x2, y2 = br
-    dashed_line(img, (x1, y1), (x2, y1), color, thickness, gap_len=gap_len)
-    dashed_line(img, (x2, y1), (x2, y2), color, thickness, gap_len=gap_len)
-    dashed_line(img, (x2, y2), (x1, y2), color, thickness, gap_len=gap_len)
-    dashed_line(img, (x1, y2), (x1, y1), color, thickness, gap_len=gap_len)
-
-
-def visualize_gt_vs_pred(
+def save_gt_vs_pred(
     results: Results,
     cls: int
 ):
-    img = results.orig_img.copy()
-    h, w = results.orig_shape
-
-    # ---- Draw GT (green) ----
-    for ann in truth_for_results(results):
-        if ann.cls != cls:
-            continue
-        box: Box = annotation_to_box(ann, w, h)
-        rectangle(img, (int(box.tl.x), int(box.tl.y)), (int(box.br.x), int(box.br.y)), (0, 200, 0), 2)
-
-    # ---- Draw predictions (red, dashed-ish) ----
-    offset = 0
-    for box in results.boxes:
-        if int(box.cls.item()) != cls:
-            continue
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        conf = float(box.conf)
-
-        dashed_rectangle(img, (x1, y1), (x2, y2), (0, 0, 200), 2, gap_len=6)
-        putText(
-            img,
-            f"{conf:.2f}",
-            (x1 + offset, y1 - 4),
-            FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 200),
-            1,
-            LINE_AA,
-        )
-        offset += 40
+    img = visualize_gt_vs_pred(results, cls)
 
     name = Path(results.path).with_suffix('').name
     filename = f"{name}.jpg"
@@ -235,13 +144,13 @@ def visualize(model, worst, cls: int):
             r.save_dir = '/tmp/'
         if waitKey(1) == 27:
             break
-        visualize_gt_vs_pred(
+        save_gt_vs_pred(
             r,
             cls=cls
         )
 
 root = Path('data/images')
-images = chain((root / 'Train').glob('*.png'), (root / 'Val').glob('*.png') )
+images = chain(root.rglob('*.png'),  root.rglob('*.jpeg'), root.rglob('*.jpg'))
 #images = [Path('data/images/Train/2026-01-15-2_000356.png')]
 model = YOLO(best_model_path)
 worst = nlargest(30, files_to_errors(list(images)), lambda x: x.error)

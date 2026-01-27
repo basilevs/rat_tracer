@@ -1,29 +1,45 @@
 from pathlib import Path
+from sys import argv
+from typing import Iterator
+from cv2 import imshow, waitKey
+from ultralytics import YOLO
 from ultralytics.data.utils import visualize_image_annotations
+
+from lib import label_path_from_image, best_model_path, visualize_gt_vs_pred
 
 label_map = {  # Define the label map with all annotated class labels.
     0: "rat",
     1: "human",
-    2: "labyrinth"
+    2: "labyrinth",
+    3: "pipe_port",
 }
+model = YOLO(best_model_path)
 
-root = Path('/Users/vasiligulevich/git/rat_tracer/data/')
-labels_dir = root / 'labels'
-images_dir = root / 'images'
-
-def show(i:Path):
-    l = labels_dir / i.relative_to(images_dir).with_suffix(".txt")
-    print(i, l)
-    print(l.read_text(), end='')
-    # Visualize
-    visualize_image_annotations(
-        i,  # Input image path.
-        l,  # Annotation file path for the image.
-        label_map,
+def visualize(images:Iterator[Path], cls: int):
+    l = list(images)
+    for i in l:
+        assert i.is_file()
+    results = model.predict(
+        list(l),
+        show=True,
+        stream=True,
+        save=False,
+        verbose=False,
     )
 
+    for r in results:
+        img = visualize_gt_vs_pred(r, cls)
+        imshow(r.path, img)
+        while True:
+            key = waitKey(100)
+            if key == 32: #Space
+                break
+            if key == 27: #Esc
+                return
 
-for i in images_dir.rglob('*.png'):
-    show(i)
 
-#show(images_dir / 'Train/frame_000050.png')
+def main():
+    visualize(map(Path, argv[1:]), 0)
+
+if __name__ == '__main__':
+    main()
