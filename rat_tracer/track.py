@@ -114,13 +114,9 @@ def track_set(results: Results) -> set[float]:
         found = set(results.boxes.id.tolist())
     return found
 
-def on_predict_postprocess_end(results):
-    pass
-
 def main(input_video: Path):
     previous_result: Results = None
     model = YOLO(best_model_path)
-    model.add_callback("on_predict_postprocess_end", on_predict_postprocess_end)
 
     stream = model.track(
         input_video,
@@ -157,7 +153,7 @@ def main(input_video: Path):
                 if any(b.box.near(lost_prediction.box, 5) for b in [*ports, *humans]):
                     continue
 
-                #save_result(idx - 1, previous_result)
+                save_result(idx - 1, previous_result)
                 save_result(idx, results)
                 print(f"Frame {idx} has mined track loss: {tid}")
                 break  # save each frame only once
