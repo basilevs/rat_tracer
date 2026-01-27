@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Self
 
-best_model_path=Path('runs/detect/train25/weights/best.pt')
+best_model_path=Path('runs/detect/train26/weights/best.pt')
 
 @dataclass
 class Point:
