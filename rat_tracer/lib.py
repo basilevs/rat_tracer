@@ -8,7 +8,7 @@ from numpy import ndarray
 from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
 
 from torch import tensor
-from ultralytics.engine.results import Results
+from ultralytics.engine.results import Results, Boxes
 
 best_model_path=Path('runs/detect/train26/weights/best.pt')
 
@@ -290,9 +290,26 @@ def nms_callback(predictor):
             dtype=boxes.cls.dtype,
         )
 
-        r.boxes = boxes.__class__(
-            xyxy=xyxy,
-            conf=conf,
-            cls=cls,
-            orig_shape=r.orig_shape,
-        )
+        ids = boxes.id  # shape (N,) or None
+
+        if ids is not None:
+            boxes_tensor = torch.cat(
+                [
+                    xyxy,
+                    ids[:, None].float(),
+                    conf[:, None],
+                    cls[:, None],
+                ],
+                dim=1,
+            )
+        else:
+            boxes_tensor = torch.cat(
+                [
+                    xyxy,
+                    conf[:, None],
+                    cls[:, None],
+                ],
+                dim=1,
+            )
+
+        r.boxes = Boxes(boxes_tensor, r.orig_shape)
