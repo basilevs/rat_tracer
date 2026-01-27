@@ -13,3 +13,4 @@ train.txt
 track.txt
 *.cache
 *.pyc
+*.jpeg
