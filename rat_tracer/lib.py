@@ -13,7 +13,7 @@ from torch import Tensor, float32, tensor
 from ultralytics.engine.results import Results, Boxes
 from ultralytics.engine.predictor import BasePredictor
 
-best_model_path=Path('runs/detect/train26/weights/best.pt')
+best_model_path=Path('runs/detect/train30/weights/best.pt')
 
 @dataclass
 class Point:
@@ -96,10 +96,11 @@ def label_path_from_image(image: Path) -> Path:
     if annotations.is_dir():
         return annotations / image.with_suffix('.txt').name
     else:
-        root:Path = image
-        while root.name != 'images':
-            root = root.parent
-        relative = image.relative_to(root).with_suffix('.txt')
+        try:
+            root:Path = next(x for x in image.absolute().parents if x.name == 'images')
+        except StopIteration as exc:
+            raise ValueError(image) from exc
+        relative = image.absolute().relative_to(root).with_suffix('.txt')
         return root.parent / 'labels' / relative
 
 
@@ -125,7 +126,7 @@ class Predictions:
                         Point(float(boxes.xyxy[i, 2]), float(boxes.xyxy[i, 3])),
                     ),
                     confidence=float(boxes.conf[i]),
-                    track=int(boxes.id[i]) if boxes.id else None
+                    track=int(boxes.id[i]) if boxes.id is not None else None
                 )
             )
 

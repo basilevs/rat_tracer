@@ -17,4 +17,6 @@ model = YOLO(best_model_path)
 
 model.add_callback("on_train_epoch_end", print_rss_after_epoch)
 
-model.train(data="data/data.yaml", epochs=100, imgsz=640, device="mps", workers=2, patience=15, resume=True)
+model.train(data="data/data.yaml", epochs=100, workers=2, patience=15, resume=True,
+    device="mps",
+)

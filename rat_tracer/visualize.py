@@ -5,7 +5,7 @@ from cv2 import imshow, waitKey
 from ultralytics import YOLO
 from ultralytics.data.utils import visualize_image_annotations
 
-from lib import label_path_from_image, best_model_path, visualize_gt_vs_pred
+from lib import label_path_from_image, best_model_path, nms_callback, visualize_gt_vs_pred
 
 label_map = {  # Define the label map with all annotated class labels.
     0: "rat",
@@ -14,6 +14,7 @@ label_map = {  # Define the label map with all annotated class labels.
     3: "pipe_port",
 }
 model = YOLO(best_model_path)
+model.add_callback("on_predict_postprocess_end", nms_callback)
 
 def visualize(images:Iterator[Path], cls: int):
     l = list(images)
