@@ -95,7 +95,6 @@ def track_set(results: Results) -> set[float]:
     return found
 
 def main(input_video: Path):
-    previous_result: Results = None
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
 
@@ -111,10 +110,18 @@ def main(input_video: Path):
         tracker="botsort.yaml"
     )
 
+    previous_result: Results = None
+    frames_with_rat = 0
+    frames_without_rat = 0
     for idx, results in enumerate(stream):
         if not previous_result:
             previous_result = results
             continue
+
+        if (results.boxes.cls == 0).any():
+            frames_with_rat += 1
+        else:
+            frames_without_rat += 1
 
         current_tracks = track_set(previous_result)
         found = track_set(results)
@@ -140,8 +147,14 @@ def main(input_video: Path):
                 break  # save each frame only once
 
         previous_result = results
-
-
+    
+    with open(Path(previous_result.save_dir) / 'statistics.txt', 'w', encoding='utf-8') as f:
+        def p(*args):
+            print(*args, file=f)
+        p('Input file:', input_video)
+        p('Model:', model.model_name)
+        p('Frames with rats:', frames_with_rat)
+        p('Frames without rats:', frames_without_rat)
 
 if __name__ == "__main__":
     main(argv[1])
