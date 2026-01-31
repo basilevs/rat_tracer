@@ -10,12 +10,13 @@ def split_dataset(
     val_ratio: float,
     seed: int = 42,
 ):
-    images_src = gt_dir / "images"
     labels_src = gt_dir / "labels"
-
     if not labels_src.is_dir():
-        labels_src = images_src / "annotations"
-
+        images_src = gt_dir
+        labels_src = gt_dir / "annotations"
+    else:
+        images_src = gt_dir / "images"
+        
     assert labels_src.is_dir()
 
     images = sorted(images_src.glob("*"))
