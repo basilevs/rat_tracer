@@ -13,7 +13,8 @@ from torch import Tensor, float32, tensor
 from ultralytics.engine.results import Results, Boxes
 from ultralytics.engine.predictor import BasePredictor
 
-best_model_path=Path('runs/detect/train30/weights/best.pt')
+best_model_path=Path('runs/detect/train32/weights/best.pt')
+#best_model_path=Path('input/yolo26n.pt')
 
 @dataclass
 class Point:
