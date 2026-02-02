@@ -6,6 +6,7 @@
     "configurations": [
 
 
+
         {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
@@ -52,6 +53,14 @@
             "program": "rat_tracer/paint.py",
             "console": "integratedTerminal",
             "args": "input/2026-01-15-2.mp4 /private/tmp/output.mp4"
+        }
+        {
+            "name": "track",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "rat_tracer/track.py",
+            "console": "integratedTerminal",
+            "args": "input/2026-01-25-3.mp4"
         }
     ]
 }
