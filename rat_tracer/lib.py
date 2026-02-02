@@ -12,7 +12,7 @@ from torch import Tensor, float32, tensor
 from ultralytics.engine.results import Results, Boxes
 from ultralytics.engine.predictor import BasePredictor
 
-best_model_path=Path('runs/detect/train33/weights/last.pt')
+best_model_path=Path('runs/detect/train33/weights/best.pt')
 #best_model_path=Path('input/yolo26n.pt')
 
 @dataclass
@@ -113,12 +113,16 @@ class Prediction:
 
 
 class Predictions:
-    def __init__(self, results: Results):
-        self._predictions: list[Prediction] = []
+    def __init__(self, predictions: list[Prediction]):
+        self._predictions: list[Prediction] = predictions
+
+    @staticmethod
+    def from_results(results: Results):
+        predictions = []
         boxes = results.boxes
         for i in range(len(boxes)):
             cls = int(boxes.cls[i].item())
-            self._predictions.append(
+            predictions.append(
                 Prediction(
                     cls=cls,
                     box=Box(
@@ -129,7 +133,11 @@ class Predictions:
                     track=int(boxes.id[i]) if boxes.id is not None else None
                 )
             )
+        return Predictions(predictions)   
 
+    def __add__(self, value):
+        return Predictions(self._predictions + value._predictions)
+    
     def by_track(self, track_id: int) -> Prediction:
         return next(p for p in self._predictions if p.track == track_id)
     
@@ -283,7 +291,7 @@ def nms_callback(predictor: BasePredictor):
         # ---- collect predictions per class ----
         by_class: dict[int, list[Prediction]] = defaultdict(list)
 
-        predictions = Predictions(r)
+        predictions = Predictions.from_results(r)
 
         for i in predictions._predictions:
             by_class[i.cls].append(i)

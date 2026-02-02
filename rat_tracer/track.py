@@ -113,6 +113,7 @@ def main(input_video: Path):
     previous_result: Results = None
     frames_with_rat = 0
     frames_without_rat = 0
+    track_loss = 0
     for idx, results in enumerate(stream):
         if not previous_result:
             previous_result = results
@@ -129,21 +130,23 @@ def main(input_video: Path):
         lost = current_tracks.difference(found)
 
         if lost and previous_result is not None:
-            previous_predictions = Predictions(previous_result)
+            previous_predictions = Predictions.from_results(previous_result)
             for tid in lost:
                 lost_prediction = previous_predictions.by_track(tid)
                 if lost_prediction.cls != 0: # consider only rats
                     continue
 
+                all_predictions = previous_predictions + Predictions.from_results(results)
                 # rat is expected to exit through ports and to be occluded by humans
-                ports = previous_predictions.by_class(3)
-                humans = previous_predictions.by_class(1)
+                ports = all_predictions.by_class(3)
+                humans = all_predictions.by_class(1)
                 if any(b.box.near(lost_prediction.box, 5) for b in [*ports, *humans]):
                     continue
 
                 save_result(idx - 1, previous_result)
                 save_result(idx, results)
                 print(f"Frame {idx} has mined track loss: {tid}")
+                track_loss += 1
                 break  # save each frame only once
 
         previous_result = results
@@ -151,10 +154,12 @@ def main(input_video: Path):
     with open(Path(previous_result.save_dir) / 'statistics.txt', 'w', encoding='utf-8') as f:
         def p(*args):
             print(*args, file=f)
+            print(*args)
         p('Input file:', input_video)
         p('Model:', model.model_name)
         p('Frames with rats:', frames_with_rat)
         p('Frames without rats:', frames_without_rat)
+        p('Rat track loss:', track_loss)
 
 if __name__ == "__main__":
     main(argv[1])
