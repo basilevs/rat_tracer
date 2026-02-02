@@ -1,19 +1,18 @@
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from itertools import zip_longest
 from pathlib import Path
 from typing import Iterator, Self, TypeVar
 
 from numpy import ndarray
 
-from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
+from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, line
 
 from torch import Tensor, float32, tensor
 from ultralytics.engine.results import Results, Boxes
 from ultralytics.engine.predictor import BasePredictor
 
-best_model_path=Path('runs/detect/train32/weights/best.pt')
+best_model_path=Path('runs/detect/train33/weights/best.pt')
 #best_model_path=Path('input/yolo26n.pt')
 
 @dataclass
@@ -138,7 +137,7 @@ class Predictions:
         return [p for p in self._predictions if p.cls == cls]
     
 EMPTY_PREDICTION = Prediction(0, Box(Point(0, 0), Point(0, 0)), 0., None)
-def box_error(truth: Prediction, prediction: Prediction) -> float:
+def box_error(truth: Prediction | None, prediction: Prediction | None) -> float:
     prediction = prediction or EMPTY_PREDICTION
     truth = truth or EMPTY_PREDICTION
     intersection_area = truth.box.intersection_area(prediction.box)
@@ -232,15 +231,26 @@ def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
 
     # ---- Draw GT (green) ----
     for ann in truth_for_results(results):
-        if ann.cls != cls:
+        if cls >= 0 and ann.cls != cls:
             continue
         box: Box = annotation_to_box(ann, w, h)
         rectangle(img, (int(box.tl.x), int(box.tl.y)), (int(box.br.x), int(box.br.y)), (0, 200, 0), 2)
 
+    putText(
+        img,
+        results.path,
+        (0, h-4),
+        FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (200, 0, 0),
+        1,
+        LINE_AA,
+    )
+
     # ---- Draw predictions (red, dashed-ish) ----
-    annotated_boxes = []
+    annotated_boxes: list[Box] = []
     for box in results.boxes:
-        if int(box.cls.item()) != cls:
+        if cls >= 0 and int(box.cls.item()) != cls:
             continue
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         conf = float(box.conf)
