@@ -1,23 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections import defaultdict
 from pathlib import Path
 from dataclasses import dataclass
-from heapq import heappop, nlargest
+from heapq import nlargest
 from itertools import chain
-from shutil import copy2
-from os import makedirs
 from typing import Iterator, TypeVar
 
 from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
 
 from ultralytics import YOLO
-from ultralytics.engine.results import Results
+from ultralytics.engine.results import Results, Boxes
 
-from rat_tracer.lib import Point, Box, Prediction, annotation_to_box, box_error, box_iou, nms_callback, pop_minimum, best_model_path, truth_for_results, visualize_gt_vs_pred
+from rat_tracer.lib import Annotation, Point, Box, Prediction, annotation_to_box, box_error, box_iou, nms_callback, pop_minimum, best_model_path, truth_for_results, visualize_gt_vs_pred
 
 
-def pop_nearest(boxes:list[Prediction], to_find: Box) -> Box | None:
+def pop_nearest(boxes:list[Prediction], to_find: Box) -> Prediction | None:
     def distance(box:Prediction):
         return -box_iou(box.box, to_find)
     return pop_minimum(boxes, distance)
@@ -38,29 +37,33 @@ def boxes_error(truth: list[Prediction], prediction: list[Prediction]):
             error += box_error(prediction.pop(), None)
     return error
 
-def result_error(results: Results, cls: int) -> float:
-    prediction = []
-    for box in results.boxes:
-        if int(box.cls.item()) != cls:
-            continue
+T = TypeVar("T")
+K = TypeVar("K")
+def group_by(seq: Iterator[T], key: Callable[[T], K]) -> dict[K, list[T]] :
+    result = defaultdict(list)
+    for i in seq:
+        result[key(i)].append(i)
+    return result
+
+def yolo_boxes_to_predictions(boxes: Boxes) -> Iterator[Prediction]:
+    for box in boxes:
         x1, y1, x2, y2 = map(float, box.xyxy[0])
-        prediction.append(Prediction(cls, Box(Point(x1, y1), Point(x2, y2)), float(box.conf), None))
-    annotations = list(x for x in truth_for_results(results) if x.cls == cls)
+        yield Prediction(int(box.cls.item()), Box(Point(x1, y1), Point(x2, y2)), float(box.conf), None)
+
+
+def result_error(results: Results, cls: int) -> float:
+    predictions_by_cls = group_by(yolo_boxes_to_predictions(results.boxes), lambda x: x.cls)
+    annotations_by_cls = group_by(truth_for_results(results), lambda x: x.cls)
     height, width = results.orig_shape
-    truth = [annotation_to_box(b, width, height) for b in annotations]
-    return boxes_error(list(Prediction(cls, x, 1., None) for x in truth), prediction)
-
-def reannotate(files: list[Path]):
-    model.predict(list(files), show=False, stream=False, save_txt=True, save=True, verbose=True)
-
-def relabel(files: list[Path]):
-    target = Path('/tmp/relabel')
-    makedirs(target, exist_ok=True)
-    while files:
-        d = heappop(files)
-        print(d)
-        copy2(d.path, target)
-
+    if cls >= 0:
+        clss = set([cls])
+    else:
+        clss = predictions_by_cls.keys() | annotations_by_cls.keys()
+    def annotation_to_prediction(annotation: Annotation) -> Prediction:
+        return Prediction(annotation.cls, annotation_to_box(annotation, width, height), 1., None)
+    def truth_for_cls(cls:int):
+        return list(map(annotation_to_prediction, annotations_by_cls[cls]))
+    return sum(boxes_error(truth_for_cls(cls),  predictions_by_cls[cls]) for cls in clss)
 
 @dataclass
 class Datum:
@@ -72,13 +75,13 @@ class Datum:
         return f"{self.path}: {self.error}"
 
 
-def files_to_errors(files: list[Path]) -> Iterator[Datum]:
-    for result in model.predict(list(files), show=False, stream=True, save_txt=False, save=False, verbose=True, batch=1):
+def files_to_errors(model: YOLO, files: list[Path], cls: int) -> Iterator[Datum]:
+    for result in model.predict(list(files), show=False, stream=True, save_txt=False, save=False, verbose=True):
         path = Path(result.path)
-        error: float = result_error(result, 0)
-        result = Datum(error, path)
-        print(result)
-        yield result
+        error: float = result_error(result, cls)
+        d = Datum(error, path)
+        print(d)
+        yield d
 
 def save_gt_vs_pred(
     results: Results,
@@ -90,19 +93,10 @@ def save_gt_vs_pred(
     filename = f"{name}.jpg"
     target_dir = Path(results.save_dir) / 'visualization'
     target_dir.mkdir(parents=True, exist_ok=True)
-    imwrite(target_dir / filename, img)
+    imwrite(str(target_dir / filename), img)
 
 
-def visualize(model, worst, cls: int):
-    paths = [d.path for d in worst]
-    results = model.predict(
-        paths,
-        show=True,
-        stream=True,
-        save=True,
-        verbose=False,
-    )
-
+def visualize(results: Iterator[Results], cls: int):
     for r in results:
         if not r.save_dir:
             r.save_dir = '/tmp/'
@@ -113,15 +107,38 @@ def visualize(model, worst, cls: int):
             cls=cls
         )
 
-root = Path('data/images')
-images = chain(*[root.rglob(pattern) for pattern in ['*.jpeg', '*.png', '*.jpg']])
-#images = [Path('data/images/Train/2026-01-15-2_000356.png')]
-model = YOLO(best_model_path)
-model.add_callback("on_predict_postprocess_end", nms_callback)
-worst = nlargest(30, files_to_errors(list(images)), lambda x: x.error)
-worst.sort(key = lambda x: x.error)
-for i in worst:
-    print(i)
+def main():
+    root = Path('data/images')
+    images = chain(*[root.rglob(pattern) for pattern in ['*.jpeg', '*.png', '*.jpg']])
+    #images = [Path('data/images/Train/2026-01-15-2_000356.png')]
+    model = YOLO(best_model_path)
+    model.add_callback("on_predict_postprocess_end", nms_callback)
+    cls = 3
+    predictions = model.predict(
+        list(images),
+        show=False,
+        stream=True,
+        save_txt=False,
+        save=False,
+        verbose=True,
+    )
+    def result_to_datum(results: Results):
+        result = Datum(result_error(results, cls), Path(results.path))
+        print(result)
+        return result
+    worst = nlargest(30, map(result_to_datum, predictions), lambda x: x.error)
+    worst.sort(key = lambda x: x.error)
+    for i in worst:
+        print(i)
 
-visualize(model, worst, 0)
-#reannotate(map(lambda x: x.path, worst))
+    predictions = model.predict(
+        list(w.path for w in worst),
+        show=True,
+        stream=True,
+        save=True,
+        verbose=False,
+    )
+    visualize(predictions, cls)
+
+if __name__ == '__main__':
+    main()
