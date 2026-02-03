@@ -5,7 +5,6 @@ from gc import collect
 from psutil import Process
 
 from ultralytics import YOLO
-from wakepy import keep
 
 from lib import best_model_path
 
@@ -26,10 +25,15 @@ def latest_train():
 
 def main():
     resume = False
-
+    patience = None
+    weights = Path('input/yolo26n.pt')
+    if "--pre" in argv:
+        weights = best_model_path
+        patience = 10
     if "--new" in argv:
+        patience = 100
         resume = False
-        model = YOLO('input/yolo26n.pt')
+        model = YOLO(weights)
     else:
         train = latest_train()
         resume = True
@@ -40,11 +44,11 @@ def main():
     model.add_callback("on_train_epoch_end", print_rss_after_epoch)
 
 
-    with keep.running():
-        model.train(data="data/data.yaml", epochs=100, workers=2, resume=resume,
-            device="mps",
-            mosaic=0.5,
-        )
+    model.train(data="data/data.yaml", epochs=100, workers=2, resume=resume,
+        device="mps",
+        mosaic=0.5,
+        patience=patience,
+    )
 
 if __name__ == '__main__':
     main()
