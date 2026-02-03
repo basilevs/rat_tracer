@@ -24,14 +24,13 @@ def latest_train():
     return root / (f"train{suffix}")
 
 def main():
-    resume = False
-    patience = None
+    conf = {
+    }
     weights = Path('input/yolo26n.pt')
     if "--pre" in argv:
         weights = best_model_path
-        patience = 10
+        conf['patience'] = 10
     if "--new" in argv:
-        patience = 100
         resume = False
         model = YOLO(weights)
     else:
@@ -47,7 +46,7 @@ def main():
     model.train(data="data/data.yaml", epochs=100, workers=2, resume=resume,
         device="mps",
         mosaic=0.5,
-        patience=patience,
+        **conf,
     )
 
 if __name__ == '__main__':
