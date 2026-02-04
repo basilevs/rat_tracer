@@ -6,6 +6,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from heapq import nlargest
 from itertools import chain
+from statistics import fmean
 from typing import Iterator, TypeVar
 
 from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
@@ -24,18 +25,18 @@ def pop_nearest(boxes:list[Prediction], to_find: Box) -> Prediction | None:
 def boxes_error(truth: list[Prediction], prediction: list[Prediction]):
     truth = list(truth)
     prediction = list(prediction)
-    error = 0.
-    while truth or prediction:
-        try:
-            t = truth.pop()
-            closest = pop_nearest(prediction, t.box)
-            local_error = box_error(t, closest)
-            assert local_error >= 0.
-            assert abs(local_error - box_error(closest, t)) < 0.00001
-            error += local_error
-        except IndexError:
-            error += box_error(prediction.pop(), None)
-    return error
+    def box_error_seq():
+        while truth or prediction:
+            try:
+                t = truth.pop()
+                closest = pop_nearest(prediction, t.box)
+                local_error = box_error(t, closest)
+                assert local_error >= 0.
+                assert abs(local_error - box_error(closest, t)) < 0.00001
+                yield local_error
+            except IndexError:
+                yield box_error(prediction.pop(), None)
+    return fmean(box_error_seq())
 
 T = TypeVar("T")
 K = TypeVar("K")
@@ -63,7 +64,7 @@ def result_error(results: Results, cls: int) -> float:
         return Prediction(annotation.cls, annotation_to_box(annotation, width, height), 1., None)
     def truth_for_cls(cls:int):
         return list(map(annotation_to_prediction, annotations_by_cls[cls]))
-    return sum(boxes_error(truth_for_cls(cls),  predictions_by_cls[cls]) for cls in clss)
+    return fmean(boxes_error(truth_for_cls(cls),  predictions_by_cls[cls]) for cls in clss)
 
 @dataclass
 class Datum:
@@ -113,7 +114,7 @@ def main():
     #images = [Path('data/images/Train/2026-01-15-2_000356.png')]
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
-    cls = 3
+    cls = -1
     predictions = model.predict(
         list(images),
         show=False,
@@ -126,7 +127,7 @@ def main():
         result = Datum(result_error(results, cls), Path(results.path))
         print(result)
         return result
-    worst = nlargest(30, map(result_to_datum, predictions), lambda x: x.error)
+    worst = nlargest(10, map(result_to_datum, predictions), lambda x: x.error)
     worst.sort(key = lambda x: x.error)
     for i in worst:
         print(i)
