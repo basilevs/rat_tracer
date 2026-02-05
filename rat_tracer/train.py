@@ -38,12 +38,12 @@ def main():
         resume = True
         if (train / 'results.png').exists():
             raise ValueError(f'{train} is fully trained. Use --new')
-        model = YOLO(train / 'weights' / 'best.pt')
+        model = YOLO(train / 'weights' / 'last.pt')
 
     model.add_callback("on_train_epoch_end", print_rss_after_epoch)
 
 
-    model.train(data="data/data.yaml", epochs=100, workers=2, resume=resume,
+    model.train(data="data/data.yaml", workers=2, resume=resume,
         device="mps",
         mosaic=0.5,
         **conf,
