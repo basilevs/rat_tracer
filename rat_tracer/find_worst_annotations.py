@@ -4,15 +4,14 @@ from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path
 from dataclasses import dataclass
-from heapq import nlargest
 from itertools import chain
 from statistics import fmean
 from typing import Iterator, TypeVar
 
-from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, imwrite, line, waitKey
+from cv2 import imshow, waitKey, destroyAllWindows
 
 from ultralytics import YOLO
-from ultralytics.engine.results import Results, Boxes
+from ultralytics.engine.results import Results
 
 from rat_tracer.lib import Annotation, Point, Box, Prediction, annotation_to_box, box_error, box_iou, nms_callback, pop_minimum, best_model_path, truth_for_results, visualize_gt_vs_pred
 
@@ -70,76 +69,58 @@ def result_error(results: Results, cls: int) -> float:
 class Datum:
     error: float
     path: Path
-    def __lt__(self, other:Datum):
-        return self.error < other.error
-    def __str__(self):
-        return f"{self.path}: {self.error}"
 
+def interactive_view(model: YOLO, data: list[Datum], cls: int):
+    idx = 0
+    n = len(data)
 
-def files_to_errors(model: YOLO, files: list[Path], cls: int) -> Iterator[Datum]:
-    for result in model.predict(list(files), show=False, stream=True, save_txt=False, save=False, verbose=True):
-        path = Path(result.path)
-        error: float = result_error(result, cls)
-        d = Datum(error, path)
-        print(d)
-        yield d
+    while True:
+        path = data[idx].path
+        results = next(model.predict([str(path)], stream=True, verbose=False))
 
-def save_gt_vs_pred(
-    results: Results,
-    cls: int
-):
-    img = visualize_gt_vs_pred(results, cls)
+        img = visualize_gt_vs_pred(results, cls)
+        imshow("Worst predictions", img)
 
-    name = Path(results.path).with_suffix('').name
-    filename = f"{name}.jpg"
-    target_dir = Path(results.save_dir) / 'visualization'
-    target_dir.mkdir(parents=True, exist_ok=True)
-    imwrite(str(target_dir / filename), img)
+        print(f"[{idx+1}/{n}] {path}  error={data[idx].error:.4f}")
 
-
-def visualize(results: Iterator[Results], cls: int):
-    for r in results:
-        if not r.save_dir:
-            r.save_dir = '/tmp/'
-        if waitKey(1) == 27:
+        key = waitKey(0)
+        # print('Key detected:', key)
+        if key == 27:          # ESC
             break
-        save_gt_vs_pred(
-            r,
-            cls=cls
-        )
+        elif key in (2, 81, 2424832):   # LEFT (Linux / macOS)
+            idx = max(0, idx - 1)
+        elif key in (3, 83, 2555904):   # RIGHT (Linux / macOS)
+            idx = min(n - 1, idx + 1)
+
+    destroyAllWindows()
+
+# ---------- main ----------
 
 def main():
-    root = Path('data/images')
-    images = chain(*[root.rglob(pattern) for pattern in ['*.jpeg', '*.png', '*.jpg']])
-    #images = [Path('data/images/Train/2026-01-15-2_000356.png')]
+    root = Path("data/images")
+    images = list(chain(
+        root.rglob("*.jpg"),
+        root.rglob("*.png"),
+        root.rglob("*.jpeg"),
+    ))
+
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
-    cls = -1
-    predictions = model.predict(
-        list(images),
-        show=False,
-        stream=True,
-        save_txt=False,
-        save=False,
-        verbose=True,
-    )
-    def result_to_datum(results: Results):
-        result = Datum(result_error(results, cls), Path(results.path))
-        print(result)
-        return result
-    worst = nlargest(10, map(result_to_datum, predictions), lambda x: x.error)
-    worst.sort(key = lambda x: x.error)
-    for i in worst:
-        print(i)
 
-    predictions = model.predict(
-        list(w.path for w in worst),
-        show=True,
-        stream=True,
-        save=True,
-        verbose=False,
-    )
-    visualize(predictions, cls)
+    cls = -1  # all classes
 
-if __name__ == '__main__':
+    data: list[Datum] = []
+
+    for r in model.predict(images, stream=True, verbose=False):
+        err = result_error(r, cls)
+        d = Datum(err, Path(r.path))
+        print(d)
+        data.append(d)
+
+    # worst first
+    data.sort(key=lambda d: d.error, reverse=True)
+
+    interactive_view(model, data, cls)
+
+if __name__ == "__main__":
     main()
