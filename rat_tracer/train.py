@@ -45,6 +45,7 @@ def main():
 
     model.train(data="data/data.yaml", workers=2, resume=resume,
         device="mps",
+        deterministic=False,
         mosaic=0.5,
         **conf,
     )
