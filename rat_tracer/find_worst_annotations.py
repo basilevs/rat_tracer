@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from itertools import chain
 from statistics import fmean
 from typing import Iterator, TypeVar
 
-from cv2 import imshow, waitKey, destroyAllWindows
+from cv2 import FONT_HERSHEY_SIMPLEX, LINE_AA, imshow, putText, waitKey, destroyAllWindows
 
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
@@ -62,12 +62,13 @@ def result_errors(results: Results, cls: int) -> Iterator[Prediction]:
         return Prediction(annotation.cls, annotation_to_box(annotation, width, height), 1., None)
     def truth_for_cls(cls:int):
         return list(map(annotation_to_prediction, annotations_by_cls[cls]))
-    return (b for b in boxes_errors(truth_for_cls(cls),  predictions_by_cls[cls]) for cls in clss)
+    return (b for c in clss for b in boxes_errors(truth_for_cls(c),  predictions_by_cls[c]) )
 
 @dataclass
 class Datum:
     error: float
     path: Path
+    errors: list[Prediction] = field(repr=False)
 
 def interactive_view(model: YOLO, data: list[Datum], cls: int):
     idx = 0
@@ -78,6 +79,17 @@ def interactive_view(model: YOLO, data: list[Datum], cls: int):
         results = next(model.predict([str(path)], stream=True, verbose=False))
 
         img = visualize_gt_vs_pred(results, cls)
+        for p in result_errors(results, cls):
+            putText(
+                img,
+                f"{p.confidence:.2f}",
+                (int(p.box.center.x), int(p.box.center.y)),
+                FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 200, 0),
+                1,
+                LINE_AA,
+            )
         imshow("Worst predictions", img)
 
         print(f"[{idx+1}/{n}] {path}  error={data[idx].error:.4f}")
@@ -111,8 +123,9 @@ def main():
     data: list[Datum] = []
 
     for r in model.predict(images, stream=True, verbose=False):
-        err = fmean(p.confidence for p in result_errors(r, cls))
-        d = Datum(err, Path(r.path))
+        errors = list(result_errors(r, cls))
+        err = fmean(p.confidence for p in errors) if errors else 0.
+        d = Datum(err, Path(r.path), errors)
         print(d)
         data.append(d)
 
