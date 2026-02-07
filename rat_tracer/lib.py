@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Self, TypeVar
 
@@ -104,13 +106,12 @@ def label_path_from_image(image: Path) -> Path:
         return root.parent / 'labels' / relative
 
 
-@dataclass
+@dataclass(frozen=True)
 class Prediction:
     cls: int
     box: Box
-    confidence: float
-    track: int | None
-
+    confidence: float = field(default=1.)
+    track: int | None = field(default=None)
 
 class Predictions:
     def __init__(self, predictions: list[Prediction]):
@@ -270,7 +271,7 @@ def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
         putText(
             img,
             f"{conf:.2f}",
-            (x1 + offset, y1 - 4),
+            (x1 + offset + 2, max(15, y1 - 4)),
             FONT_HERSHEY_SIMPLEX,
             0.5,
             (0, 0, 200),
