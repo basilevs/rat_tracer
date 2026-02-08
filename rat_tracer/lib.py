@@ -165,6 +165,9 @@ def pop_minimum(items: list[T], key: Callable[[T], float]) -> T | None:
     if not items:
         return None
 
+    if len(items) == 1:
+        return items.pop(0)
+
     min_idx = 0
     min_val = key(items[0])
 
