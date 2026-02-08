@@ -2,29 +2,27 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from collections import defaultdict
-from functools import cache
 from pathlib import Path
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from itertools import chain
-from statistics import fmean
 from typing import Iterator, TypeVar
 
-from cv2 import FONT_HERSHEY_SIMPLEX, IMREAD_UNCHANGED, LINE_AA, imshow, putText, waitKey, destroyAllWindows, imread
+from cv2 import FONT_HERSHEY_SIMPLEX, IMREAD_UNCHANGED, LINE_AA, imshow, putText, waitKey, destroyAllWindows, imread, rectangle, line
 from cv2.typing import MatLike
 
-from numpy import ndarray
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from rat_tracer.lib import Annotation, Point, Box, Prediction, annotation_to_box, box_error, box_iou, dashed_rectangle, distance_squared, nms_callback, pop_minimum, best_model_path, truth_for_results, visualize_gt_vs_pred
+from rat_tracer.lib import Annotation, Point, Box, Prediction, annotation_to_box, box_error, box_iou, dashed_rectangle, nms_callback, pop_minimum, best_model_path, truth_for_results
 
 
-def pop_nearest(boxes:list[Prediction], to_find: Box) -> Prediction | None:
-    def distance(box:Prediction):
+def pop_nearest(boxes: list[Prediction], to_find: Box) -> Prediction | None:
+    def distance(box: Prediction):
         result = -box_iou(box.box, to_find)
-        #result = distance_squared(box.box.center, to_find.center)
+        # result = distance_squared(box.box.center, to_find.center)
         return result
     return pop_minimum(boxes, distance)
+
 
 def boxes_errors(truth: list[Prediction], prediction: list[Prediction]) -> Iterator[Error]:
     truth = list(truth)
@@ -47,18 +45,23 @@ def boxes_errors(truth: list[Prediction], prediction: list[Prediction]) -> Itera
             p = prediction.pop()
             yield Error(p.cls, box_error(p, None), None, p)
 
+
 T = TypeVar("T")
 K = TypeVar("K")
-def group_by(seq: Iterator[T], key: Callable[[T], K]) -> dict[K, list[T]] :
+
+
+def group_by(seq: Iterator[T], key: Callable[[T], K]) -> dict[K, list[T]]:
     result = defaultdict(list)
     for i in seq:
         result[key(i)].append(i)
     return result
 
+
 def yolo_boxes_to_predictions(boxes: Boxes) -> Iterator[Prediction]:
     for box in boxes:
         x1, y1, x2, y2 = map(float, box.xyxy[0])
         yield Prediction(int(box.cls.item()), Box(Point(x1, y1), Point(x2, y2)), float(box.conf), None)
+
 
 @dataclass
 class Error:
@@ -66,6 +69,7 @@ class Error:
     error: float
     ground_truth: Box | None
     prediction: Prediction | None
+
     @property
     def center(self):
         if self.ground_truth:
@@ -76,27 +80,28 @@ class Error:
 
 
 def result_errors(results: Results, cls: int) -> Iterator[Error]:
-    predictions_by_cls = group_by(yolo_boxes_to_predictions(results.boxes), lambda x: x.cls)
+    predictions_by_cls = group_by(
+        yolo_boxes_to_predictions(results.boxes), lambda x: x.cls)
     annotations_by_cls = group_by(truth_for_results(results), lambda x: x.cls)
     height, width = results.orig_shape
     if cls >= 0:
         clss = set([cls])
     else:
         clss = predictions_by_cls.keys() | annotations_by_cls.keys()
+
     def annotation_to_prediction(annotation: Annotation) -> Prediction:
         return Prediction(annotation.cls, annotation_to_box(annotation, width, height), 1., None)
-    def truth_for_cls(cls:int):
+
+    def truth_for_cls(cls: int):
         return list(map(annotation_to_prediction, annotations_by_cls[cls]))
-    return (b for c in clss for b in boxes_errors(truth_for_cls(c),  predictions_by_cls[c]) )
+    return (b for c in clss for b in boxes_errors(truth_for_cls(c),  predictions_by_cls[c]))
+
 
 @dataclass
 class Datum:
     error: float
     path: Path
     errors: list[Error] = field(repr=False)
-
-from cv2 import rectangle, putText, line, FONT_HERSHEY_SIMPLEX, LINE_AA
-from numpy import ndarray
 
 
 def visualize_errors(img: MatLike, errors: list[Error]) -> None:
@@ -166,6 +171,7 @@ def visualize_errors(img: MatLike, errors: list[Error]) -> None:
                 LINE_AA,
             )
 
+
 def interactive_view(data: list[Datum]):
     idx = 0
     n = len(data)
@@ -193,6 +199,7 @@ def interactive_view(data: list[Datum]):
 
 # ---------- main ----------
 
+
 def main() -> None:
     root = Path("data/images")
     images = list(chain(
@@ -200,8 +207,8 @@ def main() -> None:
         root.rglob("*.png"),
         root.rglob("*.jpeg"),
     ))
-    #images = [Path('data/images/Val/2025-10-10_001027.png')]
-    #images = [Path('data/images/Val/2026-01-15-2_002532.png')]
+    # images = [Path('data/images/Val/2025-10-10_001027.png')]
+    # images = [Path('data/images/Val/2026-01-15-2_002532.png')]
 
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
@@ -221,6 +228,7 @@ def main() -> None:
     data.sort(key=lambda d: d.error, reverse=True)
 
     interactive_view(data)
+
 
 if __name__ == "__main__":
     main()
