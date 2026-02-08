@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from collections import defaultdict
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from itertools import chain
 from statistics import fmean
 from typing import Iterator, TypeVar
 
-from cv2 import imshow, waitKey, destroyAllWindows
+from cv2 import FONT_HERSHEY_SIMPLEX, LINE_AA, imshow, putText, waitKey, destroyAllWindows
 
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
@@ -21,21 +21,20 @@ def pop_nearest(boxes:list[Prediction], to_find: Box) -> Prediction | None:
         return -box_iou(box.box, to_find)
     return pop_minimum(boxes, distance)
 
-def boxes_error(truth: list[Prediction], prediction: list[Prediction]):
+def boxes_errors(truth: list[Prediction], prediction: list[Prediction]) -> Iterator[Prediction]:
     truth = list(truth)
     prediction = list(prediction)
-    def box_error_seq():
-        while truth or prediction:
-            try:
-                t = truth.pop()
-                closest = pop_nearest(prediction, t.box)
-                local_error = box_error(t, closest)
-                assert local_error >= 0.
-                assert abs(local_error - box_error(closest, t)) < 0.00001
-                yield local_error
-            except IndexError:
-                yield box_error(prediction.pop(), None)
-    return fmean(box_error_seq())
+    while truth or prediction:
+        try:
+            t = truth.pop()
+            closest = pop_nearest(prediction, t.box)
+            local_error = box_error(t, closest)
+            assert local_error >= 0.
+            assert abs(local_error - box_error(closest, t)) < 0.00001
+            yield replace(t, confidence=local_error)
+        except IndexError:
+            p = prediction.pop()
+            yield  replace(p, confidence=box_error(p, None))
 
 T = TypeVar("T")
 K = TypeVar("K")
@@ -51,7 +50,7 @@ def yolo_boxes_to_predictions(boxes: Boxes) -> Iterator[Prediction]:
         yield Prediction(int(box.cls.item()), Box(Point(x1, y1), Point(x2, y2)), float(box.conf), None)
 
 
-def result_error(results: Results, cls: int) -> float:
+def result_errors(results: Results, cls: int) -> Iterator[Prediction]:
     predictions_by_cls = group_by(yolo_boxes_to_predictions(results.boxes), lambda x: x.cls)
     annotations_by_cls = group_by(truth_for_results(results), lambda x: x.cls)
     height, width = results.orig_shape
@@ -63,25 +62,37 @@ def result_error(results: Results, cls: int) -> float:
         return Prediction(annotation.cls, annotation_to_box(annotation, width, height), 1., None)
     def truth_for_cls(cls:int):
         return list(map(annotation_to_prediction, annotations_by_cls[cls]))
-    return fmean(boxes_error(truth_for_cls(cls),  predictions_by_cls[cls]) for cls in clss)
+    return (b for c in clss for b in boxes_errors(truth_for_cls(c),  predictions_by_cls[c]) )
 
 @dataclass
 class Datum:
     error: float
     path: Path
+    errors: list[Prediction] = field(repr=False)
 
-def interactive_view(model: YOLO, data: list[Datum], cls: int):
+def interactive_view(datum_to_results: Callable[[Datum], Results], data: list[Datum], cls: int):
     idx = 0
     n = len(data)
 
     while True:
-        path = data[idx].path
-        results = next(model.predict([str(path)], stream=True, verbose=False))
+        datum = data[idx]
+        results = next(datum_to_results(datum))
 
         img = visualize_gt_vs_pred(results, cls)
+        for p in datum.errors:
+            putText(
+                img,
+                f"{p.confidence:.2f}",
+                (int(p.box.center.x), int(p.box.center.y)),
+                FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 200, 0),
+                1,
+                LINE_AA,
+            )
         imshow("Worst predictions", img)
 
-        print(f"[{idx+1}/{n}] {path}  error={data[idx].error:.4f}")
+        print(f"[{idx+1}/{n}] {datum.path}  error={data[idx].error:.4f}")
 
         key = waitKey(0)
         # print('Key detected:', key)
@@ -103,6 +114,7 @@ def main():
         root.rglob("*.png"),
         root.rglob("*.jpeg"),
     ))
+    images = [Path('data/images/Val/2025-10-10_001027.png')]
 
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
@@ -111,16 +123,19 @@ def main():
 
     data: list[Datum] = []
 
-    for r in model.predict(images, stream=True, verbose=False):
-        err = result_error(r, cls)
-        d = Datum(err, Path(r.path))
+    for r in model.predict(images, stream=True, verbose=False, workers=0, deterministic=True):
+        errors = list(result_errors(r, cls))
+        err = max(p.confidence for p in errors) if errors else 0.
+        d = Datum(err, Path(r.path), errors)
         print(d)
         data.append(d)
 
     # worst first
     data.sort(key=lambda d: d.error, reverse=True)
 
-    interactive_view(model, data, cls)
+    def data_to_results(d: Datum) -> Results:
+        return model.predict([str(d.path)], stream=True, verbose=True, workers=0, deterministic=True)
+    interactive_view(data_to_results, data, cls)
 
 if __name__ == "__main__":
     main()
