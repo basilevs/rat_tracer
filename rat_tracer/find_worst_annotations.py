@@ -70,16 +70,16 @@ class Datum:
     path: Path
     errors: list[Prediction] = field(repr=False)
 
-def interactive_view(model: YOLO, data: list[Datum], cls: int):
+def interactive_view(datum_to_results: Callable[[Datum], Results], data: list[Datum], cls: int):
     idx = 0
     n = len(data)
 
     while True:
-        path = data[idx].path
-        results = next(model.predict([str(path)], stream=True, verbose=False))
+        datum = data[idx]
+        results = next(datum_to_results(datum))
 
         img = visualize_gt_vs_pred(results, cls)
-        for p in result_errors(results, cls):
+        for p in datum.errors:
             putText(
                 img,
                 f"{p.confidence:.2f}",
@@ -92,7 +92,7 @@ def interactive_view(model: YOLO, data: list[Datum], cls: int):
             )
         imshow("Worst predictions", img)
 
-        print(f"[{idx+1}/{n}] {path}  error={data[idx].error:.4f}")
+        print(f"[{idx+1}/{n}] {datum.path}  error={data[idx].error:.4f}")
 
         key = waitKey(0)
         # print('Key detected:', key)
@@ -114,6 +114,7 @@ def main():
         root.rglob("*.png"),
         root.rglob("*.jpeg"),
     ))
+    images = [Path('data/images/Val/2025-10-10_001027.png')]
 
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
@@ -122,9 +123,9 @@ def main():
 
     data: list[Datum] = []
 
-    for r in model.predict(images, stream=True, verbose=False):
+    for r in model.predict(images, stream=True, verbose=False, workers=0, deterministic=True):
         errors = list(result_errors(r, cls))
-        err = fmean(p.confidence for p in errors) if errors else 0.
+        err = max(p.confidence for p in errors) if errors else 0.
         d = Datum(err, Path(r.path), errors)
         print(d)
         data.append(d)
@@ -132,7 +133,9 @@ def main():
     # worst first
     data.sort(key=lambda d: d.error, reverse=True)
 
-    interactive_view(model, data, cls)
+    def data_to_results(d: Datum) -> Results:
+        return model.predict([str(d.path)], stream=True, verbose=True, workers=0, deterministic=True)
+    interactive_view(data_to_results, data, cls)
 
 if __name__ == "__main__":
     main()
