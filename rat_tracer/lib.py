@@ -15,14 +15,14 @@ from torch import Tensor, float32, tensor
 from ultralytics.engine.results import Results, Boxes
 from ultralytics.engine.predictor import BasePredictor
 
-best_model_path=Path('runs/detect/train35/weights/last.pt')
+best_model_path=Path('runs/detect/train38/weights/last.pt')
 #best_model_path=Path('input/yolo26n.pt')
 
 @dataclass
 class Point:
     x: float
     y: float
-    def moved(self, x:float, y:float) -> Self:
+    def moved(self, x:float, y:float) -> Point:
         return Point(self.x + x, self.y + y)
 
 def middle(a: Point, b: Point) -> Point:
@@ -56,7 +56,7 @@ class Box:
         self.center = middle(self.tl, self.br)
     def intersection_area(self, other) -> float:
         return intersection_length(self.tl.x, self.br.x, other.tl.x, other.br.x) * intersection_length(self.tl.y, self.br.y, other.tl.y, other.br.y)
-    def expanded(self, margin:float) -> Self:
+    def expanded(self, margin:float) -> Box:
         return Box(self.tl.moved(-margin, -margin), self.br.moved(margin, margin))
     def near(self, other:Self, margin:float) -> bool:
         assert margin >= 0

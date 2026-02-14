@@ -209,16 +209,20 @@ def main() -> None:
     ))
     # images = [Path('data/images/Val/2025-10-10_001027.png')]
     # images = [Path('data/images/Val/2026-01-15-2_002532.png')]
+    # images = [Path('data/images/Train/2026-01-27_000006.jpeg')]
 
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
 
-    cls = -1  # all classes
+    #cls = -1  # all classes
+    cls = 0  # rat
 
     data: list[Datum] = []
 
     for r in model.predict(images, stream=True, verbose=False, workers=0, deterministic=True):
         errors: list[Error] = list(result_errors(r, cls))
+        if not errors:
+            continue
         err = max(errors, key=lambda e: e.error)
         d = Datum(err.error, Path(r.path), [err])
         print(d)

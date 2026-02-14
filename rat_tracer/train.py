@@ -4,6 +4,7 @@ from sys import argv
 from gc import collect
 from psutil import Process
 
+from wakepy import keep
 from ultralytics import YOLO
 
 from lib import best_model_path
@@ -27,28 +28,29 @@ def main():
     conf = {
     }
     weights = Path('input/yolo26n.pt')
-    if "--pre" in argv:
-        weights = best_model_path
-        conf['patience'] = 10
     if "--new" in argv:
         resume = False
-        model = YOLO(weights)
+        if "--pre" in argv:
+            weights = best_model_path
+            conf['patience'] = 20
+            conf['freeze'] = 200
     else:
         train = latest_train()
         resume = True
         if (train / 'results.png').exists():
             raise ValueError(f'{train} is fully trained. Use --new')
-        model = YOLO(train / 'weights' / 'last.pt')
+        weights = train / 'weights' / 'last.pt'
 
+    model = YOLO(weights)
     model.add_callback("on_train_epoch_end", print_rss_after_epoch)
 
-
-    model.train(data="data/data.yaml", workers=2, resume=resume,
-        device="mps",
-        deterministic=False,
-        mosaic=0.5,
-        **conf,
-    )
+    with keep.running():
+        model.train(data="data/data.yaml", workers=2, resume=resume,
+            device="mps",
+            deterministic=False,
+            mosaic=0.5,
+            **conf,
+        )
 
 if __name__ == '__main__':
     main()
