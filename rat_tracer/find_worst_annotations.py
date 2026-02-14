@@ -2,16 +2,28 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from collections import defaultdict
+from gc import collect
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import chain
 from typing import Iterator, TypeVar
 
-from cv2 import FONT_HERSHEY_SIMPLEX, IMREAD_UNCHANGED, LINE_AA, imshow, putText, waitKey, destroyAllWindows, imread, rectangle, line
+from cv2 import (
+    FONT_HERSHEY_SIMPLEX,
+    IMREAD_UNCHANGED,
+    LINE_AA,
+    imshow,
+    putText,
+    waitKey,
+    destroyAllWindows,
+    imread,
+    rectangle,
+    line
+)
 from cv2.typing import MatLike
 
 from ultralytics import YOLO
-from ultralytics.engine.results import Results
+from ultralytics.engine.results import Results, Boxes
 
 from rat_tracer.lib import Annotation, Point, Box, Prediction, annotation_to_box, box_error, box_iou, dashed_rectangle, nms_callback, pop_minimum, best_model_path, truth_for_results
 
@@ -38,8 +50,7 @@ def boxes_errors(truth: list[Prediction], prediction: list[Prediction]) -> Itera
                     assert abs(local_error - box_error(closest, t)) < 0.00001
                     yield Error(t.cls, local_error, t.box, closest)
                     continue
-                else:
-                    prediction.append(closest)
+                prediction.append(closest)
             yield Error(t.cls, box_error(t, None), t.box, None)
         except IndexError:
             p = prediction.pop()
@@ -80,8 +91,10 @@ class Error:
 
 
 def result_errors(results: Results, cls: int) -> Iterator[Error]:
-    predictions_by_cls = group_by(
-        yolo_boxes_to_predictions(results.boxes), lambda x: x.cls)
+    predictions: Iterator[Prediction] = yolo_boxes_to_predictions(
+        results.boxes) if results.boxes else iter([])
+    # predictions = (replace(x, confidence = 1.) for x in predictions) # ignore confidence experiment
+    predictions_by_cls = group_by(predictions, lambda x: x.cls)
     annotations_by_cls = group_by(truth_for_results(results), lambda x: x.cls)
     height, width = results.orig_shape
     if cls >= 0:
@@ -190,7 +203,7 @@ def interactive_view(data: list[Datum]):
         # print('Key detected:', key)
         if key == 27:          # ESC
             break
-        elif key in (2, 81, 2424832):   # LEFT (Linux / macOS)
+        if key in (2, 81, 2424832):   # LEFT (Linux / macOS)
             idx = max(0, idx - 1)
         elif key in (3, 83, 2555904):   # RIGHT (Linux / macOS)
             idx = min(n - 1, idx + 1)
@@ -202,11 +215,11 @@ def interactive_view(data: list[Datum]):
 
 def main() -> None:
     root = Path("data/images")
-    images = list(chain(
+    images = chain(
         root.rglob("*.jpg"),
         root.rglob("*.png"),
         root.rglob("*.jpeg"),
-    ))
+    )
     # images = [Path('data/images/Val/2025-10-10_001027.png')]
     # images = [Path('data/images/Val/2026-01-15-2_002532.png')]
     # images = [Path('data/images/Train/2026-01-27_000006.jpeg')]
@@ -214,12 +227,12 @@ def main() -> None:
     model = YOLO(best_model_path)
     model.add_callback("on_predict_postprocess_end", nms_callback)
 
-    #cls = -1  # all classes
-    cls = 0  # rat
+    cls = -1  # all classes
+    #cls = 0  # rat
 
     data: list[Datum] = []
 
-    for r in model.predict(images, stream=True, verbose=False, workers=0, deterministic=True):
+    for r in model.predict(list(images), stream=True, verbose=False, workers=0, conf=0.01, deterministic=True):
         errors: list[Error] = list(result_errors(r, cls))
         if not errors:
             continue
@@ -227,10 +240,13 @@ def main() -> None:
         d = Datum(err.error, Path(r.path), [err])
         print(d)
         data.append(d)
+    del model
+    del r
+    del d
+    collect()
 
     # worst first
     data.sort(key=lambda d: d.error, reverse=True)
-
     interactive_view(data)
 
 

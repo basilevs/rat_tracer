@@ -26,6 +26,7 @@ def visualize(images:Iterator[Path], cls: int):
         stream=True,
         save=False,
         verbose=True,
+        conf=0.01,
     )
 
     for r in results:

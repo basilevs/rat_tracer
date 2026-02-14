@@ -154,6 +154,8 @@ def box_error(truth: Prediction | None, prediction: Prediction | None) -> float:
     assert intersection_area >= 0
     total_area = prediction.box.area + truth.box.area - intersection_area
     assert total_area >= 0
+    if total_area <= 0:
+        return 1.
     result = (prediction.box.area - intersection_area) * prediction.confidence + (truth.box.area - intersection_area) * truth.confidence + intersection_area * abs(truth.confidence - prediction.confidence)
     result /= total_area
     assert result >= 0.
