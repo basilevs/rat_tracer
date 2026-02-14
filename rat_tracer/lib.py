@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from sys import stderr
 from typing import Iterator, Self, TypeVar
 
 from numpy import ndarray
@@ -241,12 +242,15 @@ def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
     img = results.orig_img.copy()
     h, w = results.orig_shape
 
-    # ---- Draw GT (green) ----
-    for ann in truth_for_results(results):
-        if cls >= 0 and ann.cls != cls:
-            continue
-        box: Box = annotation_to_box(ann, w, h)
-        rectangle(img, (int(box.tl.x), int(box.tl.y)), (int(box.br.x), int(box.br.y)), (0, 200, 0), 2)
+    try:
+        # ---- Draw GT (green) ----
+        for ann in truth_for_results(results):
+            if cls >= 0 and ann.cls != cls:
+                continue
+            box: Box = annotation_to_box(ann, w, h)
+            rectangle(img, (int(box.tl.x), int(box.tl.y)), (int(box.br.x), int(box.br.y)), (0, 200, 0), 2)
+    except FileNotFoundError:
+        print(results.path, 'has no annotations', file=stderr)
 
     putText(
         img,
