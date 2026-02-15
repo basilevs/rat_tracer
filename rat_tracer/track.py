@@ -101,7 +101,7 @@ def main(input_video: Path):
     stream = model.track(
         input_video,
         show=True,
-        conf=0.1,
+        conf=0.01,
         stream=True,
         save_txt=False,
         save=True,
