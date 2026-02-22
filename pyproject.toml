@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rat_tracer"
+version = "0.0.1"
+dependencies = [
+  "ultralytics>=8.4.0",
+]
+requires-python = ">=3.8"
+authors = [
+  {name = "Gulevich Vasili", email = "basilevs@gmail.com"}
+]
+description = "Track a small animal as it traverses a labyrinth"
+readme = "README.md"
+license = "EPL-2.0"
+license-files = ["LICEN[CS]E.*"]
+keywords = ["Eclipse", "MANIFEST.MF"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python"
+]
+
+[tool.hatch.build.targets.wheel]
+packages=["rat_tracer"]
+
+[project.urls]
+Homepage = "https://github.com/basilevs/rat_tracer"
+Documentation = "https://github.com/basilevs/rat_tracer"
+Repository = "https://github.com/basilevs/rat_tracer.git"
+"Bug Tracker" = "https://github.com/basilevs/rat_tracer/issues"
+Changelog = "https://github.com/basilevs/rat_tracer/commits/main/"
+
+[project.scripts]
+#where = "rat_tracer.where:main"
