@@ -7,7 +7,7 @@ from numpy import frombuffer, uint8
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from lib import Box, Point, Predictions, best_model_path, nms_callback
+from rat_tracer.lib import Box, Point, Predictions, best_model_path, nms_callback
 
 LABYRINTH_CLASS = 2
 

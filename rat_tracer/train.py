@@ -7,7 +7,7 @@ from psutil import Process
 from wakepy import keep
 from ultralytics import YOLO
 
-from lib import best_model_path
+from rat_tracer.lib import best_model_path
 
 
 # Callback: print resident set size (RSS) memory
