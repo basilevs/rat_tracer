@@ -11,6 +11,10 @@ Experiment - does not have an inteface
 # Disclaimer
 This is a research project not meant for general consumption. It has no covenient interface.
 
+# Installation
+git clone https://github.com/basilevs/rat_tracer.git  
+pip install -e rat_tracer
+
 # Training workflow
 - Film your rat in a top-down view (referenced below as `video.mp4`)
 - Download a pre-trained model and configure it in `lib.py/best_model_path`
