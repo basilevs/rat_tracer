@@ -12,6 +12,7 @@ ApplicationWindow {
     visible: true
     Material.theme: Material.Dark
     Material.accent: Material.Red
+    property bool playing: true
     ColumnLayout {
         spacing: 2
         anchors.fill: parent
@@ -19,11 +20,6 @@ ApplicationWindow {
         Layout.preferredWidth: 400
         Layout.fillWidth: true
         Layout.fillHeight: true
-        MediaPlayer {
-            id: player
-            source: "file:///Users/vasiligulevich/git/rat_tracer/input/2025-10-10.mp4"
-            videoOutput: videoOutput
-        }
         VideoOutput {
             id: videoOutput
             Layout.fillWidth: true
@@ -31,8 +27,20 @@ ApplicationWindow {
             height: 200
             width: 200
             fillMode: VideoOutput.PreserveAspectFit
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {
+                    page.playing = !page.playing
+                }
+            }
         }
-
+        Button {
+            text: page.playing ? "Pause" : "Play"
+            Layout.alignment: Qt.AlignHCenter
+            onClicked: {
+                page.playing = !page.playing
+            }
+        }
     }
 
 }

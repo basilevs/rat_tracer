@@ -1,8 +1,9 @@
 from platform import system
 from pathlib import Path
+from collections.abc import Generator
 
-from numpy import ones, zeros, uint8
-from numpy import ndarray
+from numpy import add, multiply, ones, zeros, uint8
+from numpy import ndarray, dtype, bool_
 
 from cv2 import (
     MORPH_ELLIPSE,
@@ -29,39 +30,17 @@ RAT_CLASS = 0
 ALPHA = 0.35
 MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
-def main(input_video: Path, output_video: Path):
-    model = YOLO(best_model_path)
+type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
 
-    if not output_video:
-        raise ValueError('Output argument is missing')
-    if output_video.is_dir():
-        output_video = output_video / input_video.with_suffix('').name
-    if output_video.with_suffix('') == input_video.with_suffix(''):
-        output_video = input_video.parent / (input_video.with_suffix('').name + '_painted')
 
+def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, MaskFrame], None, None]:
     cap = VideoCapture(str(input_video))
     try:
         width = int(cap.get(CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(CAP_PROP_FPS)
     finally:
         cap.release()
-
-    suffix, fourcc = (".mp4", "avc1") if MACOS else (".avi", "WMV2") if WINDOWS else (".avi", "MJPG")
-
-    output_video = output_video.with_suffix(suffix)
-    writer = VideoWriter(
-        str(output_video.with_suffix(suffix)),
-        VideoWriter_fourcc(*fourcc),
-        fps,
-        (width, height),
-    )
-
-    if not writer.isOpened():
-        raise ValueError("Can't write to " + str(output_video))
-
-    visited: ndarray = zeros((height, width), dtype=uint8)
-
+    
     mog = createBackgroundSubtractorMOG2(
         history=500,
         varThreshold=16,
@@ -80,11 +59,13 @@ def main(input_video: Path, output_video: Path):
     red = zeros((height, width, 3), dtype=uint8)
     red[:, :, 2] = 255
 
+    visited: MaskFrame = zeros((height, width), dtype=bool)
     open_kernel = getStructuringElement(MORPH_ELLIPSE,(5,5))
-    for frame_idx, results in enumerate(results_stream):
+    for results in results_stream:
         img = results.orig_img
 
         fg = mog.apply(img)
+        visited[:] = False
         if results.boxes is not None:
             for box in results.boxes:
                 if int(box.cls.item()) != RAT_CLASS:
@@ -106,13 +87,50 @@ def main(input_video: Path, output_video: Path):
                     MORPH_OPEN,
                     open_kernel,
                 )
-                visited[y1:y2, x1:x2][roi > 0] = 255
+                visited[y1:y2, x1:x2][roi > 0] = True
+        yield (img, visited)
 
+def apply_red_mask(img: ndarray, mask: MaskFrame):
+    img[mask.astype(bool)] = multiply(img[mask.astype(bool)], 1.-ALPHA, casting='unsafe')
+    img[mask.astype(bool)] = add(img[mask.astype(bool)], [0,0,int(255*ALPHA)])
+
+def main(input_video: Path, output_video: Path):
+    model = YOLO(best_model_path)
+    cap = VideoCapture(str(input_video))
+    try:
+        width = int(cap.get(CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(CAP_PROP_FPS)
+    finally:
+        cap.release()
+
+    if not output_video:
+        raise ValueError('Output argument is missing')
+    if output_video.is_dir():
+        output_video = output_video / input_video.with_suffix('').name
+    if output_video.with_suffix('') == input_video.with_suffix(''):
+        output_video = input_video.parent / (input_video.with_suffix('').name + '_painted')
+
+    suffix, fourcc = (".mp4", "avc1") if MACOS else (".avi", "WMV2") if WINDOWS else (".avi", "MJPG")
+
+    output_video = output_video.with_suffix(suffix)
+    writer = VideoWriter(
+        str(output_video.with_suffix(suffix)),
+        VideoWriter_fourcc(*fourcc),
+        fps,
+        (width, height),
+    )
+
+    if not writer.isOpened():
+        raise ValueError("Can't write to " + str(output_video))
+
+    visited: MaskFrame = zeros((height, width), dtype=bool)
+    
+
+    for (frame_idx, (img, mask)) in enumerate(presence_frames(input_video, model)):
+        visited |= mask
         mask = visited.astype(bool)
-        img[mask] = (
-            img[mask] * (1 - ALPHA) +
-            red[mask] * ALPHA
-        )
+        apply_red_mask(img, mask)
 
         writer.write(img)
 
