@@ -69,7 +69,7 @@ class Throttle(QObject):
         self.processed = 0
         self._newFrame.connect(self._processQueue)
 
-    @Slot(QVideoSink)
+    @Slot(QVideoFrame)
     def set(self, frame):
         self.frame = frame
         self.count += 1
