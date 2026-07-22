@@ -1,10 +1,12 @@
 
+from rat_tracer.lib import Synchronized
+
 from numpy import zeros
 from numpy import ndarray, dtype, bool_
 
 type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
 
-class CoverageHistory:
+class CoverageHistory(Synchronized):
     """ Stores the history of visited pixels across frames. """
     def __init__(self):
         self.width = None
@@ -20,6 +22,7 @@ class CoverageHistory:
             self.history = []
     
     def append(self, presence_frame: MaskFrame) -> MaskFrame:
+        # TODO: release the read lock while doing computation
         height, width = presence_frame.shape[:2]
         self._ensure_initialized(width, height)
         self.visited |= presence_frame.astype(bool)

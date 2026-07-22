@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
 from sys import stderr
+from threading import RLock
 from typing import Iterator, Self, TypeVar
 
 from numpy import ndarray
@@ -356,3 +358,26 @@ def build_boxes_tensor(
             device=device,
             dtype=dtype,
         )
+
+# Source - https://stackoverflow.com/a/55896748
+# Posted by Olivier Melançon, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-07-21, License - CC BY-SA 4.0
+
+class Synchronized:
+    """ Force all methods of a class to be synchronized. """
+    def __init_subclass__(cls, **kwargs):
+        synchronizer = synchronized()
+        for name in cls.__dict__:
+            attr = getattr(cls, name)
+            if callable(attr):
+                setattr(cls, name, synchronizer(attr))
+
+def synchronized():
+    lock = RLock()
+    def wrapper(f):
+        @wraps(f)
+        def inner_wrapper(*args, **kwargs):
+            with lock:
+                return f(*args, **kwargs)
+        return inner_wrapper
+    return wrapper

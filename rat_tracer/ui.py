@@ -3,18 +3,21 @@ from sys import argv, path, exit
 from pathlib import Path
 import random
 import sys
-from threading import Thread
+from threading import Lock
 from typing import Generic, TypeVar
 
 from PySide6.QtCore import QObject, QThread, Slot
 from PySide6.QtCore import Qt, Signal
 from PySide6 import QtCore, QtWidgets, QtGui
+from PySide6.QtCore import QObject, Signal, Slot
+from threading import Lock
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QVideoFrame
 from ultralytics import YOLO
 
+from rat_tracer.coverage import CoverageHistory
 from rat_tracer.paint import apply_red_mask, presence_frames
 from rat_tracer.lib import best_model_path
 
@@ -67,20 +70,22 @@ class Throttle(QObject):
         self.frame = None
         self.count = 0
         self.processed = 0
-        self._newFrame.connect(self._processQueue)
+        self._newFrame.connect(self._process_queue)
+        self._lock = Lock()
 
     @Slot(QVideoFrame)
     def set(self, frame):
-        self.frame = frame
-        self.count += 1
+        with self._lock:
+            self.frame = frame
+            self.count += 1
         self._newFrame.emit()
     
-    def _processQueue(self):
-        if self.processed < self.count: # ignore thread safety for now
+    def _process_queue(self):
+        with self._lock:
+            if self.processed >= self.count:
+                return
             self.processed = self.count
-            self.ready.emit(self.frame)
-
-
+        self.ready.emit(self.frame)
 
 if __name__ == "__main__":
     app = QGuiApplication(argv)
@@ -95,10 +100,12 @@ if __name__ == "__main__":
 
     frameThrottle = Throttle()
 
+    history = CoverageHistory()
     class BackgroundWorker(QThread):
         def run(self):
             for img, mask in presence_frames(Path("input/2026-02-07-2.mp4"), model=YOLO(best_model_path)):
-                apply_red_mask(img, mask)
+                history.append(mask)
+                apply_red_mask(img, history.visited)
                 frame = bgr_array_to_qvideoframe(img)
                 frameThrottle.set(frame)
                 if self.isInterruptionRequested():
