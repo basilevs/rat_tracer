@@ -4,6 +4,7 @@ from collections.abc import Generator
 from typing import TypeVar, Sequence
 from queue import Queue, Empty, ShutDown
 from threading import Thread
+from logging import DEBUG, getLogger
 
 from numpy import add, multiply, ones, zeros, uint8
 from numpy import ndarray, dtype, bool_
@@ -33,6 +34,9 @@ RAT_CLASS = 0
 ALPHA = 0.35
 MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
+logger = getLogger(__name__)
+logger.setLevel(DEBUG)
+
 type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
 
 
@@ -45,7 +49,7 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
         cap.release()
 
 
-    frame_batches = generate_in_thread(video_frames(input_video), maxsize=100)
+    frame_batches = generate_in_thread(video_frames(input_video), maxsize=1000)
     mog = createBackgroundSubtractorMOG2(
         history=500,
         varThreshold=16,
@@ -54,14 +58,16 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
 
     open_kernel = getStructuringElement(MORPH_ELLIPSE,(5,5))
     for batch in frame_batches:
+        logger.debug("Processing batch of size %d", len(batch))
         results_batch = model.predict(
-            source=str(input_video),
+            source=batch,
             batch = len(batch),
             conf=0.25,
             stream=True,
             verbose=False,
             show=False,
         )
+
 
 
         for results in results_batch:
