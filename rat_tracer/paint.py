@@ -49,7 +49,7 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
         cap.release()
 
 
-    frame_batches = generate_in_thread(video_frames(input_video), maxsize=1000)
+    frame_batches = generate_in_thread(video_frames(input_video), maxsize=30)
     mog = createBackgroundSubtractorMOG2(
         history=500,
         varThreshold=16,

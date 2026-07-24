@@ -1,10 +1,11 @@
-import logging
+from logging import getLogger, basicConfig, DEBUG
 from pprint import pprint
 from sys import argv, path, exit
 from pathlib import Path
 import random
 import sys
 from threading import Lock
+from time import time
 from typing import Generic, TypeVar
 
 from PySide6.QtCore import QObject, QThread, Slot
@@ -29,6 +30,9 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QSize
 from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat
+
+logger = getLogger(__name__)
+logger.setLevel(DEBUG)
 
 def bgr_array_to_qvideoframe(bgr_arr: np.ndarray) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""
@@ -89,7 +93,7 @@ class Throttle(QObject):
         self.ready.emit(self.frame)
 
 if __name__ == "__main__":
-    logging.basicConfig()
+    basicConfig()
     app = QGuiApplication(argv)
     QQuickStyle.setStyle("Material")
     engine = QQmlApplicationEngine()
@@ -105,13 +109,17 @@ if __name__ == "__main__":
     history = CoverageHistory()
     class BackgroundWorker(QThread):
         def run(self):
-            for img, mask in presence_frames(Path("input/2026-02-07-2.mp4"), model=YOLO(best_model_path)):
+            video = Path("input/2026-02-07-2.mp4")
+            start = time()
+            logger.info("Processing video: %s", video)
+            for img, mask in presence_frames(video, model=YOLO(best_model_path)):
                 history.append(mask)
                 apply_red_mask(img, history.visited)
                 frame = bgr_array_to_qvideoframe(img)
                 frameThrottle.set(frame)
                 if self.isInterruptionRequested():
                     return
+            logger.info("Finished processing video: %s in %.2f seconds", video, time() - start)
 
     thread = BackgroundWorker()
     app.aboutToQuit.connect(thread.requestInterruption)
