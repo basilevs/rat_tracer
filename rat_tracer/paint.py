@@ -1,6 +1,9 @@
 from platform import system
 from pathlib import Path
 from collections.abc import Generator
+from typing import TypeVar, Sequence
+from queue import Queue, Empty, ShutDown
+from threading import Thread
 
 from numpy import add, multiply, ones, zeros, uint8
 from numpy import ndarray, dtype, bool_
@@ -40,55 +43,100 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
         height = int(cap.get(CAP_PROP_FRAME_HEIGHT))
     finally:
         cap.release()
-    
+
+
+    frame_batches = generate_in_thread(video_frames(input_video), maxsize=100)
     mog = createBackgroundSubtractorMOG2(
         history=500,
         varThreshold=16,
         detectShadows=False,
     )
 
-    results_stream = model.track(
-        source=str(input_video),
-        conf=0.25,
-        persist=True,
-        stream=True,
-        verbose=False,
-        show=False,
-    )
-
-    red = zeros((height, width, 3), dtype=uint8)
-    red[:, :, 2] = 255
-
-    visited: MaskFrame = zeros((height, width), dtype=bool)
     open_kernel = getStructuringElement(MORPH_ELLIPSE,(5,5))
-    for results in results_stream:
-        img = results.orig_img
+    for batch in frame_batches:
+        results_batch = model.predict(
+            source=str(input_video),
+            batch = len(batch),
+            conf=0.25,
+            stream=True,
+            verbose=False,
+            show=False,
+        )
 
-        fg = mog.apply(img)
-        visited[:] = False
-        if results.boxes is not None:
-            for box in results.boxes:
-                if int(box.cls.item()) != RAT_CLASS:
-                    continue
 
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                x1 = max(0, x1)
-                y1 = max(0, y1)
-                x2 = min(width, x2)
-                y2 = min(height, y2)
+        for results in results_batch:
+            visited: MaskFrame = zeros((height, width), dtype=bool)
+            img = results.orig_img
+            fg = mog.apply(img)
+            visited[:] = False
+            if results.boxes is not None:
+                for box in results.boxes:
+                    if int(box.cls.item()) != RAT_CLASS:
+                        continue
 
-                if x2 <= x1 or y2 <= y1:
-                    continue
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(width, x2)
+                    y2 = min(height, y2)
 
-                roi = fg[y1:y2, x1:x2]
+                    if x2 <= x1 or y2 <= y1:
+                        continue
 
-                roi = morphologyEx(
-                    roi,
-                    MORPH_OPEN,
-                    open_kernel,
-                )
-                visited[y1:y2, x1:x2][roi > 0] = True
-        yield (img, visited)
+                    roi = fg[y1:y2, x1:x2]
+
+                    roi = morphologyEx(
+                        roi,
+                        MORPH_OPEN,
+                        open_kernel,
+                    )
+                    visited[y1:y2, x1:x2][roi > 0] = True
+            yield (img, visited)
+
+def video_frames(input_video: Path) -> Generator[ndarray, None, None]:
+    cap = VideoCapture(str(input_video))
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            yield frame
+    finally:
+        cap.release()
+
+def generate_in_thread[T](generator: Generator[T, None, None], maxsize: int = 100) -> Generator[list[T], None, None]:
+
+    q: Queue = Queue(maxsize=maxsize)
+
+    def worker():
+        try:
+            for item in generator:
+                q.put(item)
+        except ShutDown:
+            pass
+        finally:
+            q.shutdown()
+
+    buffer = []
+    try:
+        thread = Thread(target=worker, daemon=True)
+        thread.start()
+        while True:
+            buffer.append(q.get(block=True))
+            try:
+                while True:
+                    buffer.append(q.get(block=False))
+            except Empty:
+                if buffer:
+                    yield buffer[:]
+                    buffer = []
+    except ShutDown:
+        if buffer:
+            yield buffer
+    finally:
+        q.shutdown()
+        thread.join()
+
 
 def apply_red_mask(img: ndarray, mask: MaskFrame):
     img[mask.astype(bool)] = multiply(img[mask.astype(bool)], 1.-ALPHA, casting='unsafe')

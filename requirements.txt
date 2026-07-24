@@ -31,7 +31,6 @@ PySide6_Addons==6.11.1
 PySide6_Essentials==6.11.1
 python-dateutil==2.9.0.post0
 PyYAML==6.0.3
--e git+https://github.com/basilevs/rat_tracer.git@00e9d46d1bedda6f42d39914da19b74ecf7b66cf#egg=rat_tracer
 requests==2.34.2
 scipy==1.17.0
 setuptools==82.0.0
