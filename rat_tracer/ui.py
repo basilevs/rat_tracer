@@ -1,3 +1,4 @@
+import logging
 from pprint import pprint
 from sys import argv, path, exit
 from pathlib import Path
@@ -88,6 +89,7 @@ class Throttle(QObject):
         self.ready.emit(self.frame)
 
 if __name__ == "__main__":
+    logging.basicConfig()
     app = QGuiApplication(argv)
     QQuickStyle.setStyle("Material")
     engine = QQmlApplicationEngine()
