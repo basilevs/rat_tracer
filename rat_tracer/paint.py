@@ -49,12 +49,13 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
 
     results_stream = model.track(
         source=str(input_video),
-        batch=30,
+        batch=15,
         conf=0.25,
         persist=False,
         stream=True,
         verbose=False,
         show=False,
+        device='mps'
     )
 
     red = zeros((height, width, 3), dtype=uint8)
