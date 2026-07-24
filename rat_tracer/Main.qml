@@ -34,6 +34,10 @@ ApplicationWindow {
                 }
             }
         }
+        Slider {
+            Layout.fillWidth: true
+            objectName: "slider_here"
+        }
         Button {
             text: page.playing ? "Pause" : "Play"
             Layout.alignment: Qt.AlignHCenter

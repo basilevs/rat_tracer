@@ -8,6 +8,8 @@ from threading import Lock
 from time import time
 from typing import Generic, TypeVar
 
+from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
+
 from PySide6.QtCore import QObject, QThread, Slot
 from PySide6.QtCore import Qt, Signal
 from PySide6 import QtCore, QtWidgets, QtGui
@@ -17,6 +19,9 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QVideoFrame
+from PySide6.QtWidgets import QSlider
+from PySide6.QtQuick import QQuickItem
+
 from ultralytics import YOLO
 
 from rat_tracer.coverage import CoverageHistory
@@ -65,6 +70,16 @@ def bgr_array_to_qvideoframe(bgr_arr: np.ndarray) -> QVideoFrame:
         
     return frame
 
+
+
+def print_qobject_children(obj: QObject, indent: str = ""):
+    """Recursively prints the QObject tree for debugging purposes."""
+    prefix = indent
+    print(f"{prefix}{obj.__class__.__name__} (objectName='{obj.objectName()}')")
+    for child in obj.children():
+        print_qobject_children(child, indent + "  ")
+
+
 if __name__ == "__main__":
     basicConfig()
     app = QGuiApplication(argv)
@@ -78,37 +93,48 @@ if __name__ == "__main__":
         exit(-1)
 
     root = engine.rootObjects()[0]
+    print_qobject_children(root)
 
     videoOutput = root.findChild(QVideoSink)
-    assert videoOutput is not None, "QVideoSink not found in QML"
-    
-
+    assert videoOutput, "QVideoSink not found in QML"
     def set_video_frame(frame: QVideoFrame):
         if root.property("playing"):
             videoOutput.setVideoFrame(frame)
 
 
     history = CoverageHistory()
-    root = engine.rootObjects()[0]
 
-    videoOutput = root.findChild(QVideoSink)
-    assert videoOutput is not None, "QVideoSink not found in QML"
+    slider = root.findChild(QSlider, "slider_here")
+    assert slider, "QSlider not found in QML"
 
-    def set_video_frame(frame: QVideoFrame):
-        if root.property("playing"):
-            videoOutput.setVideoFrame(frame)
+    video = Path("input/2026-02-07-2.mp4")
 
+    cap = VideoCapture(str(video))
+
+
+    def slide_to_frame(frame_idx: int):
+        if frame_idx < 0 or frame_idx >= len(history):
+            logger.warning("Frame index %d out of range", frame_idx)
+            return
+        logger.info("Sliding to frame %d", frame_idx)
+        cap.set(CAP_PROP_POS_FRAMES, frame_idx)
+        ok, img = cap.read()
+        if not ok:
+            raise RuntimeError(f"Cannot read frame {frame_idx}")
+        apply_red_mask(img, history[frame_idx])
+        frame = bgr_array_to_qvideoframe(img)
+        videoOutput.setVideoFrame(frame)
+        if slider.value != frame_idx:
+            slider.setValue(frame_idx)
 
     class BackgroundWorker(QThread):
         def run(self):
-            video = Path("input/2026-02-07-2.mp4")
             start = time()
             logger.info("Processing video: %s", video)
-            for img, mask in presence_frames(video, model=YOLO(best_model_path)):
+            for _, mask in presence_frames(video, model=YOLO(best_model_path)):
                 history.append(mask)
-                apply_red_mask(img, history.visited)
-                frame = bgr_array_to_qvideoframe(img)
-                set_video_frame(frame)
+                if root.property("playing"):
+                    slide_to_frame(len(history)-1)
                 if self.isInterruptionRequested():
                     return
             logger.info("Finished processing video: %s in %.2f seconds", video, time() - start)

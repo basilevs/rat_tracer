@@ -112,7 +112,6 @@ def video_frames(input_video: Path) -> Generator[ndarray, None, None]:
         cap.release()
 
 def generate_in_thread[T](generator: Generator[T, None, None], maxsize: int = 100) -> Generator[list[T], None, None]:
-
     q: Queue = Queue(maxsize=maxsize)
     error = None
 
