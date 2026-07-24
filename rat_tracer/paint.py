@@ -4,7 +4,7 @@ from collections.abc import Generator
 from typing import TypeVar, Sequence
 from queue import Queue, Empty, ShutDown
 from threading import Thread
-from logging import DEBUG, getLogger
+from logging import DEBUG, INFO, getLogger
 
 from numpy import add, multiply, ones, zeros, uint8
 from numpy import ndarray, dtype, bool_
@@ -28,17 +28,16 @@ from cv2 import (
 )
 
 from ultralytics import YOLO
-from rat_tracer.lib import best_model_path
+from rat_tracer.lib import best_model_path, chunk
 
 RAT_CLASS = 0
 ALPHA = 0.35
 MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
 logger = getLogger(__name__)
-logger.setLevel(DEBUG)
+logger.setLevel(INFO)
 
 type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
-
 
 def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, MaskFrame], None, None]:
     cap = VideoCapture(str(input_video))
@@ -49,7 +48,8 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
         cap.release()
 
 
-    frame_batches = generate_in_thread(video_frames(input_video), maxsize=30)
+    # frame_batches = chunk(video_frames(input_video), 1)
+    frame_batches = generate_in_thread(video_frames(input_video), 15)
     mog = createBackgroundSubtractorMOG2(
         history=500,
         varThreshold=16,
@@ -66,9 +66,8 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
             stream=True,
             verbose=False,
             show=False,
+            device='mps'
         )
-
-
 
         for results in results_batch:
             visited: MaskFrame = zeros((height, width), dtype=bool)

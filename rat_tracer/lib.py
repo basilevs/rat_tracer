@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from itertools import islice
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import wraps
@@ -381,3 +382,27 @@ def synchronized():
                 return f(*args, **kwargs)
         return inner_wrapper
     return wrapper
+
+def chunk(it, n):
+    '''
+    # returns chunks of n elements each
+
+    >>> list(chunk(range(10), 3))
+    [
+        [0, 1, 2, ],
+        [3, 4, 5, ],
+        [6, 7, 8, ],
+        [9, ]
+    ]
+
+    >>> list(chunk(list(range(10)), 3))
+    [
+        [0, 1, 2, ],
+        [3, 4, 5, ],
+        [6, 7, 8, ],
+        [9, ]
+    ]
+    '''
+    def _w(g):
+        return lambda: tuple(islice(g, n))
+    return iter(_w(iter(it)), ())

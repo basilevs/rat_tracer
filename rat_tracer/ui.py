@@ -107,6 +107,15 @@ if __name__ == "__main__":
     frameThrottle = Throttle()
 
     history = CoverageHistory()
+    root = engine.rootObjects()[0]
+
+    videoOutput = root.findChild(QVideoSink)
+
+    def setVideoFrame(frame: QVideoFrame):
+        if root.property("playing"):
+            videoOutput.setVideoFrame(frame)
+
+
     class BackgroundWorker(QThread):
         def run(self):
             video = Path("input/2026-02-07-2.mp4")
@@ -116,7 +125,8 @@ if __name__ == "__main__":
                 history.append(mask)
                 apply_red_mask(img, history.visited)
                 frame = bgr_array_to_qvideoframe(img)
-                frameThrottle.set(frame)
+                # frameThrottle.set(frame)
+                setVideoFrame(frame)
                 if self.isInterruptionRequested():
                     return
             logger.info("Finished processing video: %s in %.2f seconds", video, time() - start)
@@ -125,17 +135,11 @@ if __name__ == "__main__":
     app.aboutToQuit.connect(thread.requestInterruption)
     app.aboutToQuit.connect(thread.wait)
 
-    root = engine.rootObjects()[0]
-
-    videoOutput = root.findChild(QVideoSink)
     assert videoOutput is not None, "QVideoSink not found in QML"
     
 
-    def setVideoFrame(frame: QVideoFrame):
-        if root.property("playing"):
-            videoOutput.setVideoFrame(frame)
 
-    frameThrottle.ready.connect(setVideoFrame)
+    #frameThrottle.ready.connect(setVideoFrame)
     thread.start()
 
     exit_code = app.exec()
