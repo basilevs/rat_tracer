@@ -65,33 +65,6 @@ def bgr_array_to_qvideoframe(bgr_arr: np.ndarray) -> QVideoFrame:
         
     return frame
 
-class Throttle(QObject):
-    """ A QObject that emits a signal with a new frame. """
-    _newFrame = Signal()
-    ready = Signal(QVideoFrame)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.frame = None
-        self.count = 0
-        self.processed = 0
-        self._newFrame.connect(self._process_queue)
-        self._lock = Lock()
-
-    @Slot(QVideoFrame)
-    def set(self, frame):
-        with self._lock:
-            self.frame = frame
-            self.count += 1
-        self._newFrame.emit()
-    
-    def _process_queue(self):
-        with self._lock:
-            if self.processed >= self.count:
-                return
-            self.processed = self.count
-        self.ready.emit(self.frame)
-
 if __name__ == "__main__":
     basicConfig()
     app = QGuiApplication(argv)
@@ -104,14 +77,24 @@ if __name__ == "__main__":
     if not engine.rootObjects():
         exit(-1)
 
-    frameThrottle = Throttle()
+    root = engine.rootObjects()[0]
+
+    videoOutput = root.findChild(QVideoSink)
+    assert videoOutput is not None, "QVideoSink not found in QML"
+    
+
+    def set_video_frame(frame: QVideoFrame):
+        if root.property("playing"):
+            videoOutput.setVideoFrame(frame)
+
 
     history = CoverageHistory()
     root = engine.rootObjects()[0]
 
     videoOutput = root.findChild(QVideoSink)
+    assert videoOutput is not None, "QVideoSink not found in QML"
 
-    def setVideoFrame(frame: QVideoFrame):
+    def set_video_frame(frame: QVideoFrame):
         if root.property("playing"):
             videoOutput.setVideoFrame(frame)
 
@@ -125,8 +108,7 @@ if __name__ == "__main__":
                 history.append(mask)
                 apply_red_mask(img, history.visited)
                 frame = bgr_array_to_qvideoframe(img)
-                # frameThrottle.set(frame)
-                setVideoFrame(frame)
+                set_video_frame(frame)
                 if self.isInterruptionRequested():
                     return
             logger.info("Finished processing video: %s in %.2f seconds", video, time() - start)
@@ -135,11 +117,6 @@ if __name__ == "__main__":
     app.aboutToQuit.connect(thread.requestInterruption)
     app.aboutToQuit.connect(thread.wait)
 
-    assert videoOutput is not None, "QVideoSink not found in QML"
-    
-
-
-    #frameThrottle.ready.connect(setVideoFrame)
     thread.start()
 
     exit_code = app.exec()

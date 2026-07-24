@@ -9,6 +9,8 @@ from logging import DEBUG, INFO, getLogger
 from numpy import add, multiply, ones, zeros, uint8
 from numpy import ndarray, dtype, bool_
 
+from torch.accelerator import current_accelerator
+
 from cv2 import (
     MORPH_ELLIPSE,
     VideoCapture,
@@ -66,7 +68,7 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
             stream=True,
             verbose=False,
             show=False,
-            device='mps'
+            device=current_accelerator()
         )
 
         for results in results_batch:
@@ -112,6 +114,7 @@ def video_frames(input_video: Path) -> Generator[ndarray, None, None]:
 def generate_in_thread[T](generator: Generator[T, None, None], maxsize: int = 100) -> Generator[list[T], None, None]:
 
     q: Queue = Queue(maxsize=maxsize)
+    error = None
 
     def worker():
         try:
@@ -119,6 +122,8 @@ def generate_in_thread[T](generator: Generator[T, None, None], maxsize: int = 10
                 q.put(item)
         except ShutDown:
             pass
+        except Exception as e:
+            error = e
         finally:
             q.shutdown()
 
@@ -141,6 +146,8 @@ def generate_in_thread[T](generator: Generator[T, None, None], maxsize: int = 10
     finally:
         q.shutdown()
         thread.join()
+        if error:
+            raise error
 
 
 def apply_red_mask(img: ndarray, mask: MaskFrame):
