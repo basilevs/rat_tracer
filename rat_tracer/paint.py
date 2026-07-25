@@ -37,7 +37,7 @@ ALPHA = 0.35
 MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
 logger = getLogger(__name__)
-logger.setLevel(INFO)
+logger.setLevel(DEBUG)
 
 type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
 

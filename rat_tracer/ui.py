@@ -10,6 +10,8 @@ from typing import Generic, TypeVar
 
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 
+from signal import signal, SIGINT
+
 from PySide6.QtCore import Property, QObject, QThread, Slot
 from PySide6.QtCore import Qt, Signal
 from PySide6 import QtCore, QtWidgets, QtGui
@@ -19,7 +21,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QVideoFrame
-from PySide6.QtWidgets import QSlider
+from PySide6.QtWidgets import QApplication, QSlider
 from PySide6.QtQuick import QQuickItem
 
 from ultralytics import YOLO
@@ -101,9 +103,8 @@ class VideoMasker(QObject):
         if t:
             t.frameReady.disconnect(self._threadConnection)
             t.requestInterruption()
-            t.join()
+            t.wait()
         self._thread = None
-
         self._video = None
         self._history.clear()
         self._position = 0.0
@@ -127,10 +128,14 @@ class VideoMasker(QObject):
         # Prevent infinite binding loops by only updating if the value actually changed
         if self._position != new_value:
             self._position = new_value
-        new_value = int(new_value * self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        capture = self._cap
+        if not capture:
+            self.frameReady.emit(QVideoFrame())
+            return
+        new_value = int(new_value * capture.get(cv2.CAP_PROP_FRAME_COUNT))
         logger.info("Sliding to frame %d", new_value)
-        self._cap.set(CAP_PROP_POS_FRAMES, int(new_value))
-        ok, img = self._cap.read()
+        capture.set(CAP_PROP_POS_FRAMES, int(new_value))
+        ok, img = capture.read()
         if not ok:
             raise RuntimeError(f"Cannot read frame {new_value}")
         if new_value < 0 or new_value >= len(self._history):
@@ -181,9 +186,18 @@ def print_qobject_children(obj: QObject, indent: str = ""):
         print_qobject_children(child, indent + "  ")
 
 
+
+
+def handleIntSignal(*args):
+    print("SIGINT received, quitting application...")
+    QApplication.quit()
+
 if __name__ == "__main__":
     basicConfig()
     app = QGuiApplication(argv)
+
+    signal(SIGINT, handleIntSignal)
+
     QQuickStyle.setStyle("Material")
     engine = QQmlApplicationEngine()
     # Add the current directory to the import paths and load the main module.
