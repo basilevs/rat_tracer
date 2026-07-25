@@ -13,7 +13,13 @@ class CoverageHistory(Synchronized):
         self.height = None
         self.visited = None
         self.history = []
-    
+
+    def clear(self):
+        self.width = None
+        self.height = None
+        self.visited = None
+        self.history.clear()
+
     def _ensure_initialized(self, width: int, height: int):
         if self.width != width or self.height != height:
             self.width = width

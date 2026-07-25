@@ -10,7 +10,7 @@ from typing import Generic, TypeVar
 
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 
-from PySide6.QtCore import QObject, QThread, Slot
+from PySide6.QtCore import Property, QObject, QThread, Slot
 from PySide6.QtCore import Qt, Signal
 from PySide6 import QtCore, QtWidgets, QtGui
 from PySide6.QtCore import QObject, Signal, Slot
@@ -38,6 +38,107 @@ from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat
 
 logger = getLogger(__name__)
 logger.setLevel(DEBUG)
+
+QML_IMPORT_NAME = "MyBackend"
+QML_IMPORT_MAJOR_VERSION = 1
+
+class BackgroundWorker(QThread):
+    frameReady = Signal()
+
+    def __init__(self, history: CoverageHistory, video: Path, parent=None):
+        super().__init__(parent)
+        self._history = history
+        self._video = video
+        
+    def run(self):
+        start = time()
+        logger.info("Processing video: %s", self._video)
+        for _, mask in presence_frames(self._video, model=YOLO(best_model_path)):
+            self._history.append(mask)
+            if self.isInterruptionRequested():
+                return
+            self.frameReady.emit()
+        logger.info("Finished processing video: %s in %.2f seconds", self._video, time() - start)
+
+
+@QmlElement
+class VideoMasker(QObject):
+    # 1. Define a signal to notify QML when the property changes
+    frameReady = Signal(QVideoFrame)
+
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._history = CoverageHistory()
+        self._position = 0.0
+        self._video = Path("input/2026-02-07-2.mp4")
+        self._threadConnection = None
+        self._thread = None
+        self._playing = True
+
+    @Property(str)
+    def video(self):
+        return str(self._video)
+
+    @video.setter
+    def video(self, new_video: str):
+        self.reset()
+        self._video = Path(new_video)
+        self._cap = VideoCapture(str(self._video))
+        self._cap.set(CAP_PROP_POS_FRAMES, 0)  # Reset video to the beginning
+        t = BackgroundWorker(self._history, self._video)
+        self._thread  = t
+        self._threadConnection =  t.frameReady.connect(self._on_frame_ready)
+        self._thread.start()
+
+    @Slot()
+    def _on_frame_ready(self):
+        if self._playing:
+            self.position = float(len(self._history)-1) / self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    @Slot()
+    def reset(self):
+        t = self._thread
+        if t:
+            t.frameReady.disconnect(self._threadConnection)
+            t.requestInterruption()
+            t.join()
+        self._thread = None
+
+        self._video = None
+        self._history.clear()
+        self._position = 0.0
+        self._cap = None
+
+    @Property(bool)
+    def playing(self):
+        return self._playing
+
+    @playing.setter
+    def playing(self, value: bool):
+        self._playing = value
+        self._on_frame_ready()
+
+    @Property(float)
+    def position(self):
+        return self._position
+
+    @position.setter
+    def position(self, new_value: float):
+        # Prevent infinite binding loops by only updating if the value actually changed
+        if self._position != new_value:
+            self._position = new_value
+        new_value = int(new_value * self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        logger.info("Sliding to frame %d", new_value)
+        self._cap.set(CAP_PROP_POS_FRAMES, int(new_value))
+        ok, img = self._cap.read()
+        if not ok:
+            raise RuntimeError(f"Cannot read frame {new_value}")
+        if new_value < 0 or new_value >= len(self._history):
+            logger.debug("Frame index %d out of range", new_value)
+        else:
+            apply_red_mask(img, self._history[int(new_value)])
+        frame = bgr_array_to_qvideoframe(img)
+        self.frameReady.emit(frame)
 
 def bgr_array_to_qvideoframe(bgr_arr: np.ndarray) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""
@@ -95,55 +196,13 @@ if __name__ == "__main__":
     root = engine.rootObjects()[0]
     print_qobject_children(root)
 
-    videoOutput = root.findChild(QVideoSink)
-    assert videoOutput, "QVideoSink not found in QML"
-    def set_video_frame(frame: QVideoFrame):
-        if root.property("playing"):
-            videoOutput.setVideoFrame(frame)
-
-
-    history = CoverageHistory()
-
-    slider = root.findChild(QSlider, "slider_here")
-    assert slider, "QSlider not found in QML"
-
     video = Path("input/2026-02-07-2.mp4")
 
-    cap = VideoCapture(str(video))
+    masker = root.findChild(VideoMasker)
+    masker.video = str(video)
 
 
-    def slide_to_frame(frame_idx: int):
-        if frame_idx < 0 or frame_idx >= len(history):
-            logger.warning("Frame index %d out of range", frame_idx)
-            return
-        logger.info("Sliding to frame %d", frame_idx)
-        cap.set(CAP_PROP_POS_FRAMES, frame_idx)
-        ok, img = cap.read()
-        if not ok:
-            raise RuntimeError(f"Cannot read frame {frame_idx}")
-        apply_red_mask(img, history[frame_idx])
-        frame = bgr_array_to_qvideoframe(img)
-        videoOutput.setVideoFrame(frame)
-        if slider.value != frame_idx:
-            slider.setValue(frame_idx)
-
-    class BackgroundWorker(QThread):
-        def run(self):
-            start = time()
-            logger.info("Processing video: %s", video)
-            for _, mask in presence_frames(video, model=YOLO(best_model_path)):
-                history.append(mask)
-                if root.property("playing"):
-                    slide_to_frame(len(history)-1)
-                if self.isInterruptionRequested():
-                    return
-            logger.info("Finished processing video: %s in %.2f seconds", video, time() - start)
-
-    thread = BackgroundWorker()
-    app.aboutToQuit.connect(thread.requestInterruption)
-    app.aboutToQuit.connect(thread.wait)
-
-    thread.start()
+    app.aboutToQuit.connect(masker.reset)
 
     exit_code = app.exec()
 

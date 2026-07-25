@@ -4,6 +4,7 @@ import QtQuick.Controls 2.1
 import QtQuick.Window 2.1
 import QtQuick.Controls.Material 2.1
 import QtMultimedia
+import MyBackend
 
 ApplicationWindow {
     id: page
@@ -13,6 +14,12 @@ ApplicationWindow {
     Material.theme: Material.Dark
     Material.accent: Material.Red
     property bool playing: true
+    VideoMasker {
+        id: "masker"
+        position: slider.position
+        playing: page.playing
+        onFrameReady: videoOutput.setVideoFrame
+    }
     ColumnLayout {
         spacing: 2
         anchors.fill: parent
@@ -35,8 +42,10 @@ ApplicationWindow {
             }
         }
         Slider {
+            id: "slider"
             Layout.fillWidth: true
             objectName: "slider_here"
+            
         }
         Button {
             text: page.playing ? "Pause" : "Play"
