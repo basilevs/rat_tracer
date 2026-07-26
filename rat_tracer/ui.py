@@ -92,26 +92,28 @@ class VideoMasker(QObject):
         """Load a video from a QML file URL (from a file dialog or drag-and-drop)."""
         local_path = url.toLocalFile()
         if local_path:
-            self.video = local_path
+            self.video = local_path  # type: ignore[assignment]  # PySide Property setter
 
     @Slot()
     def _on_frame_ready(self):
         if self._playing:
             cap = self._cap
             if cap:
-                self.position = float(len(self._history) - 1) / self._total_frame_count
+                # PySide Property setter
+                self.position = float(len(self._history) - 1) / self._total_frame_count  # type: ignore[assignment]
 
     def _get_video_output(self) -> QObject:
-        return self._video_output
+        return self._video_output  # type: ignore[return-value]  # None until QML binds it
 
     def _set_video_output(self, video_output: QObject) -> None:
         self._video_output = video_output
         if isinstance(video_output, QVideoSink):
             self._video_sink = video_output
         else:
-            self._video_sink = video_output.findChild(QVideoSink)
-        if not self._video_sink:
-            raise ValueError("video_output must be a QVideoSink or contain one as a child")
+            sink = video_output.findChild(QVideoSink)
+            if not sink:
+                raise ValueError("video_output must be a QVideoSink or contain one as a child")
+            self._video_sink = sink
         self._on_frame_ready()
 
     video_output = Property(QObject, _get_video_output, _set_video_output)
@@ -172,6 +174,7 @@ class VideoMasker(QObject):
             frame = QVideoFrame()
             while self._position != self._pending_position:
                 new_value = self._pending_position
+                assert new_value is not None
                 self._position = new_value
                 capture = self._cap
                 if not capture:
@@ -223,7 +226,7 @@ def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
         arr_bytes = bgra_arr.tobytes()
 
         # Reassign the memoryview slice with our array data
-        frame_data[: len(arr_bytes)] = arr_bytes
+        frame_data[: len(arr_bytes)] = arr_bytes  # type: ignore[index]  # bits() returns a writable memoryview
 
         # Always unmap when finished to lock the data into the frame!
         frame.unmap()
@@ -239,7 +242,7 @@ def print_qobject_children(obj: QObject, indent: str = ""):
         print_qobject_children(child, indent + "  ")
 
 
-def handleIntSignal():
+def handleIntSignal(signum, frame):
     print("SIGINT received, quitting application...")
     QApplication.quit()
 
@@ -264,6 +267,7 @@ def main():
 
     masker = root.findChild(VideoMasker)
 
+    assert masker is not None
     app.aboutToQuit.connect(masker.reset)
 
     exit_code = app.exec()  # exit immediately to investigate QML binding issues
