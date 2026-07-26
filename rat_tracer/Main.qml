@@ -48,11 +48,27 @@ ApplicationWindow {
             onMoved: () => masker.position = slider.value
             value: masker.position
         }
-        Button {
-            text: page.playing ? "Pause" : "Play"
-            Layout.alignment: Qt.AlignHCenter
-            onClicked: {
-                page.playing = !page.playing
+        RowLayout {
+            Button {
+                text: page.playing ? "Pause" : "Play"
+                Layout.alignment: Qt.AlignHCenter
+                onClicked: {
+                    page.playing = !page.playing
+                }
+            }
+            TextEdit {
+                id: clipboardHelper
+                visible: false
+            }
+            Button {
+                text: masker.time_text
+                ToolTip.visible: hovered
+                ToolTip.text: "Click to copy"
+                onClicked: {
+                    clipboardHelper.text = masker.time_text
+                    clipboardHelper.selectAll()
+                    clipboardHelper.copy()
+                }
             }
         }
     }

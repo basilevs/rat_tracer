@@ -128,6 +128,18 @@ class VideoMasker(QObject):
         self._playing = value
         self._on_frame_ready()
 
+    @Property(str, notify=position_changed)
+    def time_text(self):
+        cap = self._cap
+        if not cap:
+            return "00:00:00"
+        fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1.0
+        elapsed_seconds = int(self._position * total_frames / fps)
+        hours, rem = divmod(elapsed_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
     @Property(float, notify=position_changed)
     def position(self):
         return self._position
