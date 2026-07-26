@@ -1,13 +1,13 @@
-from dataclasses import dataclass
-from itertools import zip_longest
-from pathlib import Path
+from contextlib import suppress
 from os import mkdir
+from pathlib import Path
 from sys import argv
+
 from numpy import frombuffer, uint8
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from rat_tracer.lib import Box, Point, Predictions, model_path, nms_callback
+from rat_tracer.lib import Predictions, model_path, nms_callback
 
 LABYRINTH_CLASS = 2
 
@@ -19,29 +19,24 @@ LABYRINTH_MARGIN = 0.1
 def save_result(idx: int, results: Results):
     height, width = results.orig_shape
     data = frombuffer(results.orig_img, dtype=uint8)
-    name = Path(results.path).with_suffix('').name
+    name = Path(results.path).with_suffix("").name
     data = data.reshape((height, width, 3))
     filename = f"{name}_{idx:0>6}.jpg"
-    target_dir = Path(results.save_dir) / 'track_loss'
-    try:
+    target_dir = Path(results.save_dir) / "track_loss"
+    with suppress(FileExistsError):
         mkdir(target_dir)
-    except FileExistsError:
-        pass
     results.save(target_dir / filename)
 
 
 def normalize_box(box, width, height):
     x1, y1, x2, y2 = box
-    return (
-        x1 / width,
-        y1 / height,
-        x2 / width,
-        y2 / height
-    )
+    return (x1 / width, y1 / height, x2 / width, y2 / height)
+
 
 def near_image_edge_norm(box_norm, margin):
     x1, y1, x2, y2 = box_norm
-    return near_border(box_norm, (0., 0., 1., 1.), margin)
+    return near_border(box_norm, (0.0, 0.0, 1.0, 1.0), margin)
+
 
 def near_border(box, border, margin):
     if border is None:
@@ -51,10 +46,10 @@ def near_border(box, border, margin):
     lx1, ly1, lx2, ly2 = border
 
     return (
-        abs(x1 - lx1) < margin or
-        abs(y1 - ly1) < margin or
-        abs(x2 - lx2) < margin or
-        abs(y2 - ly2) < margin
+        abs(x1 - lx1) < margin
+        or abs(y1 - ly1) < margin
+        or abs(x2 - lx2) < margin
+        or abs(y2 - ly2) < margin
     )
 
 
@@ -65,8 +60,7 @@ def extract_labyrinth_box(results: Results):
 
     height, width = results.orig_shape
 
-    for box, cls in zip(results.boxes.xyxy.tolist(),
-                        results.boxes.cls.tolist()):
+    for box, cls in zip(results.boxes.xyxy.tolist(), results.boxes.cls.tolist(), strict=True):
         if int(cls) == LABYRINTH_CLASS:
             return normalize_box(box, width, height)
 
@@ -80,12 +74,12 @@ def find_box_for_track(results: Results, track_id):
 
     height, width = results.orig_shape
 
-    for tid, box in zip(results.boxes.id.tolist(),
-                        results.boxes.xyxy.tolist()):
+    for tid, box in zip(results.boxes.id.tolist(), results.boxes.xyxy.tolist(), strict=True):
         if tid == track_id:
             return normalize_box(box, width, height)
 
     return None
+
 
 def track_set(results: Results) -> set[float]:
     if results.boxes.id is None or not results.boxes.id.numel():
@@ -93,6 +87,7 @@ def track_set(results: Results) -> set[float]:
     else:
         found = set(results.boxes.id.tolist())
     return found
+
 
 def main(input_video: Path):
     model = YOLO(model_path())
@@ -107,7 +102,7 @@ def main(input_video: Path):
         save=True,
         nms=True,
         verbose=False,
-        tracker="botsort.yaml"
+        tracker="botsort.yaml",
     )
 
     previous_result: Results = None
@@ -133,7 +128,7 @@ def main(input_video: Path):
             previous_predictions = Predictions.from_results(previous_result)
             for tid in lost:
                 lost_prediction = previous_predictions.by_track(tid)
-                if lost_prediction.cls != 0: # consider only rats
+                if lost_prediction.cls != 0:  # consider only rats
                     continue
 
                 all_predictions = previous_predictions + Predictions.from_results(results)
@@ -150,16 +145,19 @@ def main(input_video: Path):
                 break  # save each frame only once
 
         previous_result = results
-    
-    with open(Path(previous_result.save_dir) / 'statistics.txt', 'w', encoding='utf-8') as f:
+
+    with open(Path(previous_result.save_dir) / "statistics.txt", "w", encoding="utf-8") as f:
+
         def p(*args):
             print(*args, file=f)
             print(*args)
-        p('Input file:', input_video)
-        p('Model:', model.model_name)
-        p('Frames with rats:', frames_with_rat)
-        p('Frames without rats:', frames_without_rat)
-        p('Rat track loss:', track_loss)
+
+        p("Input file:", input_video)
+        p("Model:", model.model_name)
+        p("Frames with rats:", frames_with_rat)
+        p("Frames without rats:", frames_without_rat)
+        p("Rat track loss:", track_loss)
+
 
 if __name__ == "__main__":
     main(argv[1])

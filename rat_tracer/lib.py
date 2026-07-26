@@ -1,29 +1,27 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from itertools import islice
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from functools import wraps
+from itertools import islice
 from os import environ
 from pathlib import Path
 from sys import stderr
 from threading import RLock
-from typing import Iterator, Self, TypeVar
+from typing import Self
 
-from numpy import ndarray
-
-from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, line
-
+from cv2 import FONT_HERSHEY_SIMPLEX, LINE_AA, line, putText, rectangle
 from huggingface_hub import hf_hub_download
-
+from numpy import ndarray
 from torch import Tensor, float32, tensor
-from ultralytics.engine.results import Results, Boxes
 from ultralytics.engine.predictor import BasePredictor
+from ultralytics.engine.results import Boxes, Results
 
-MODEL_REPO_ID = 'basilevs83/rat-tracer'
-MODEL_FILENAME = 'rat_tracer.pt'
-MODEL_ENV_VAR = 'RAT_TRACER_MODEL'
+MODEL_REPO_ID = "basilevs83/rat-tracer"
+MODEL_FILENAME = "rat_tracer.pt"
+MODEL_ENV_VAR = "RAT_TRACER_MODEL"
+
 
 def model_path() -> Path:
     """Resolve the detection model weights.
@@ -38,24 +36,31 @@ def model_path() -> Path:
         return Path(override)
     try:
         return Path(hf_hub_download(repo_id=MODEL_REPO_ID, filename=MODEL_FILENAME))
-    except Exception:  # pylint: disable=broad-except
-        return Path(hf_hub_download(repo_id=MODEL_REPO_ID, filename=MODEL_FILENAME, local_files_only=True))
+    except Exception:
+        return Path(
+            hf_hub_download(repo_id=MODEL_REPO_ID, filename=MODEL_FILENAME, local_files_only=True)
+        )
+
 
 @dataclass
 class Point:
     x: float
     y: float
-    def moved(self, x:float, y:float) -> Point:
+
+    def moved(self, x: float, y: float) -> Point:
         return Point(self.x + x, self.y + y)
 
+
 def middle(a: Point, b: Point) -> Point:
-    return Point((a.x + b.x)/2, (a.y+b.y)/2)
+    return Point((a.x + b.x) / 2, (a.y + b.y) / 2)
+
 
 def distance_squared(a: Point, b: Point) -> float:
-    return (a.x - b.x)**2 + (a.y - b.y)**2
+    return (a.x - b.x) ** 2 + (a.y - b.y) ** 2
+
 
 def intersection_length(min1: float, max1: float, min2: float, max2: float):
-    """ length of intersection between intervals 1 and 2"""
+    """length of intersection between intervals 1 and 2"""
     assert min1 <= max1
     assert min2 <= max2
     if min1 >= max2 or min2 >= max1:
@@ -64,26 +69,35 @@ def intersection_length(min1: float, max1: float, min2: float, max2: float):
     assert result >= 0
     return result
 
-def _near_range(begin: float, end: float, target:float, margin: float) -> bool:
+
+def _near_range(begin: float, end: float, target: float, margin: float) -> bool:
     return begin - margin < target < end + margin
+
 
 @dataclass
 class Box:
     tl: Point
     br: Point
+
     def __post_init__(self):
         assert self.tl.x <= self.br.x
         assert self.tl.y <= self.br.y
         self.area = (self.br.x - self.tl.x) * (self.br.y - self.tl.y)
-        assert self.area >= 0.
+        assert self.area >= 0.0
         self.center = middle(self.tl, self.br)
+
     def intersection_area(self, other) -> float:
-        return intersection_length(self.tl.x, self.br.x, other.tl.x, other.br.x) * intersection_length(self.tl.y, self.br.y, other.tl.y, other.br.y)
-    def expanded(self, margin:float) -> Box:
+        return intersection_length(
+            self.tl.x, self.br.x, other.tl.x, other.br.x
+        ) * intersection_length(self.tl.y, self.br.y, other.tl.y, other.br.y)
+
+    def expanded(self, margin: float) -> Box:
         return Box(self.tl.moved(-margin, -margin), self.br.moved(margin, margin))
-    def near(self, other:Self, margin:float) -> bool:
+
+    def near(self, other: Self, margin: float) -> bool:
         assert margin >= 0
         return self.expanded(margin).intersection_area(other) > 0
+
 
 def box_iou(a: Box, b: Box) -> float:
     inter = a.intersection_area(b)
@@ -93,17 +107,20 @@ def box_iou(a: Box, b: Box) -> float:
     assert union > 0
     return inter / union
 
+
 @dataclass
 class Annotation:
     cls: int
     coords: list[float]
 
+
 def read_annotations(path: Path) -> Iterator[Annotation]:
-    for line in path.read_text().split('\n'):
-        if not line:
+    for raw_line in path.read_text().split("\n"):
+        if not raw_line:
             continue
-        fields = line.split(' ')
+        fields = raw_line.split(" ")
         yield Annotation(int(fields[0]), list(map(float, fields[1:])))
+
 
 def annotation_to_box(a: Annotation, width: float, height: float) -> Box:
     cx, cy, w, h = a.coords
@@ -111,31 +128,34 @@ def annotation_to_box(a: Annotation, width: float, height: float) -> Box:
     half_h = h * height / 2
     return Box(
         Point(cx * width - half_w, cy * height - half_h),
-        Point(cx * width + half_w, cy * height + half_h)
+        Point(cx * width + half_w, cy * height + half_h),
     )
+
 
 def truth_for_results(results: Results) -> Iterator[Annotation]:
     return read_annotations(label_path_from_image(Path(results.path)))
 
+
 def label_path_from_image(image: Path) -> Path:
-    annotations = image.parent / 'annotations'
+    annotations = image.parent / "annotations"
     if annotations.is_dir():
-        return annotations / image.with_suffix('.txt').name
+        return annotations / image.with_suffix(".txt").name
     else:
         try:
-            root:Path = next(x for x in image.absolute().parents if x.name == 'images')
+            root: Path = next(x for x in image.absolute().parents if x.name == "images")
         except StopIteration as exc:
             raise ValueError(image) from exc
-        relative = image.absolute().relative_to(root).with_suffix('.txt')
-        return root.parent / 'labels' / relative
+        relative = image.absolute().relative_to(root).with_suffix(".txt")
+        return root.parent / "labels" / relative
 
 
 @dataclass(frozen=True)
 class Prediction:
     cls: int
     box: Box
-    confidence: float = field(default=1.)
+    confidence: float = field(default=1.0)
     track: int | None = field(default=None)
+
 
 class Predictions:
     def __init__(self, predictions: list[Prediction]):
@@ -155,21 +175,24 @@ class Predictions:
                         Point(float(boxes.xyxy[i, 2]), float(boxes.xyxy[i, 3])),
                     ),
                     confidence=float(boxes.conf[i]),
-                    track=int(boxes.id[i]) if boxes.id is not None else None
+                    track=int(boxes.id[i]) if boxes.id is not None else None,
                 )
             )
-        return Predictions(predictions)   
+        return Predictions(predictions)
 
     def __add__(self, value):
         return Predictions(self._predictions + value._predictions)
-    
+
     def by_track(self, track_id: int) -> Prediction:
         return next(p for p in self._predictions if p.track == track_id)
-    
+
     def by_class(self, cls: int) -> list[Prediction]:
         return [p for p in self._predictions if p.cls == cls]
-    
-EMPTY_PREDICTION = Prediction(0, Box(Point(0, 0), Point(0, 0)), 0., None)
+
+
+EMPTY_PREDICTION = Prediction(0, Box(Point(0, 0), Point(0, 0)), 0.0, None)
+
+
 def box_error(truth: Prediction | None, prediction: Prediction | None) -> float:
     prediction = prediction or EMPTY_PREDICTION
     truth = truth or EMPTY_PREDICTION
@@ -178,15 +201,18 @@ def box_error(truth: Prediction | None, prediction: Prediction | None) -> float:
     total_area = prediction.box.area + truth.box.area - intersection_area
     assert total_area >= 0
     if total_area <= 0:
-        return 1.
-    result = (prediction.box.area - intersection_area) * prediction.confidence + (truth.box.area - intersection_area) * truth.confidence + intersection_area * abs(truth.confidence - prediction.confidence)
+        return 1.0
+    result = (
+        (prediction.box.area - intersection_area) * prediction.confidence
+        + (truth.box.area - intersection_area) * truth.confidence
+        + intersection_area * abs(truth.confidence - prediction.confidence)
+    )
     result /= total_area
-    assert result >= 0.
+    assert result >= 0.0
     return result
 
-T = TypeVar("T")
 
-def pop_minimum(items: list[T], key: Callable[[T], float]) -> T | None:
+def pop_minimum[T](items: list[T], key: Callable[[T], float]) -> T | None:
     """Find, remove and return the element with minimal key(input[i])."""
     if not items:
         return None
@@ -205,6 +231,7 @@ def pop_minimum(items: list[T], key: Callable[[T], float]) -> T | None:
 
     return items.pop(min_idx)
 
+
 def nms(
     predictions: list[Prediction],
     iou_threshold: float = 0.5,
@@ -220,10 +247,7 @@ def nms(
         best = preds.pop(0)
         kept.append(best)
 
-        preds = [
-            p for p in preds
-            if box_iou(best.box, p.box) < iou_threshold
-        ]
+        preds = [p for p in preds if box_iou(best.box, p.box) < iou_threshold]
 
     return kept
 
@@ -231,7 +255,7 @@ def nms(
 def dashed_line(img, p1, p2, color, thickness=1, dash_len=6, gap_len=4):
     x1, y1 = p1
     x2, y2 = p2
-    length = ((x2 - x1)**2 + (y2 - y1)**2) ** 0.5
+    length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
     if length == 0:
         return
 
@@ -255,6 +279,7 @@ def dashed_line(img, p1, p2, color, thickness=1, dash_len=6, gap_len=4):
         dist += seg_len
         draw = not draw
 
+
 def dashed_rectangle(img, tl, br, color, thickness=1, gap_len=4):
     x1, y1 = tl
     x2, y2 = br
@@ -263,7 +288,8 @@ def dashed_rectangle(img, tl, br, color, thickness=1, gap_len=4):
     dashed_line(img, (x2, y2), (x1, y2), color, thickness, gap_len=gap_len)
     dashed_line(img, (x1, y2), (x1, y1), color, thickness, gap_len=gap_len)
 
-def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
+
+def visualize_gt_vs_pred(results: Results, cls: int) -> ndarray:
     img = results.orig_img.copy()
     h, w = results.orig_shape
 
@@ -273,14 +299,16 @@ def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
             if cls >= 0 and ann.cls != cls:
                 continue
             box: Box = annotation_to_box(ann, w, h)
-            rectangle(img, (int(box.tl.x), int(box.tl.y)), (int(box.br.x), int(box.br.y)), (0, 200, 0), 2)
+            rectangle(
+                img, (int(box.tl.x), int(box.tl.y)), (int(box.br.x), int(box.br.y)), (0, 200, 0), 2
+            )
     except FileNotFoundError:
-        print(results.path, 'has no annotations', file=stderr)
+        print(results.path, "has no annotations", file=stderr)
 
     putText(
         img,
         results.path,
-        (0, h-4),
+        (0, h - 4),
         FONT_HERSHEY_SIMPLEX,
         0.5,
         (200, 0, 0),
@@ -312,13 +340,14 @@ def visualize_gt_vs_pred(results: Results, cls:int) -> ndarray:
         )
     return img
 
+
 def nms_callback(predictor: BasePredictor):
 
     for r in predictor.results:
         if r.boxes is None or len(r.boxes) == 0:
             continue
 
-        boxes:Boxes = r.boxes
+        boxes: Boxes = r.boxes
         device = boxes.xyxy.device
 
         # ---- collect predictions per class ----
@@ -339,6 +368,7 @@ def nms_callback(predictor: BasePredictor):
             continue
 
         r.boxes = Boxes(build_boxes_tensor(kept, device), r.orig_shape)
+
 
 def build_boxes_tensor(
     preds: list[Prediction],
@@ -380,12 +410,15 @@ def build_boxes_tensor(
             dtype=dtype,
         )
 
+
 # Source - https://stackoverflow.com/a/55896748
 # Posted by Olivier Melançon, modified by community. See post 'Timeline' for change history
 # Retrieved 2026-07-21, License - CC BY-SA 4.0
 
+
 class Synchronized:
-    """ Force all methods of a class to be synchronized. """
+    """Force all methods of a class to be synchronized."""
+
     def __init_subclass__(cls, **kwargs):
         synchronizer = synchronized()
         for name in cls.__dict__:
@@ -393,18 +426,23 @@ class Synchronized:
             if callable(attr):
                 setattr(cls, name, synchronizer(attr))
 
+
 def synchronized():
     lock = RLock()
+
     def wrapper(f):
         @wraps(f)
         def inner_wrapper(*args, **kwargs):
             with lock:
                 return f(*args, **kwargs)
+
         return inner_wrapper
+
     return wrapper
 
+
 def chunk(it, n):
-    '''
+    """
     # returns chunks of n elements each
 
     >>> list(chunk(range(10), 3))
@@ -422,7 +460,9 @@ def chunk(it, n):
         [6, 7, 8, ],
         [9, ]
     ]
-    '''
+    """
+
     def _w(g):
         return lambda: tuple(islice(g, n))
+
     return iter(_w(iter(it)), ())

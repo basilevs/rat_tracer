@@ -1,11 +1,11 @@
+from collections.abc import Iterator
 from pathlib import Path
 from sys import argv
-from typing import Iterator
+
 from cv2 import imshow, waitKey
 from ultralytics import YOLO
-from ultralytics.data.utils import visualize_image_annotations
 
-from rat_tracer.lib import label_path_from_image, model_path, nms_callback, visualize_gt_vs_pred
+from rat_tracer.lib import model_path, nms_callback, visualize_gt_vs_pred
 
 label_map = {  # Define the label map with all annotated class labels.
     0: "rat",
@@ -16,12 +16,13 @@ label_map = {  # Define the label map with all annotated class labels.
 model = YOLO(model_path())
 model.add_callback("on_predict_postprocess_end", nms_callback)
 
-def visualize(images:Iterator[Path], cls: int):
-    l = list(images)
-    for i in l:
+
+def visualize(images: Iterator[Path], cls: int):
+    paths = list(images)
+    for i in paths:
         assert i.is_file()
     results = model.predict(
-        list(l),
+        list(paths),
         show=False,
         stream=True,
         save=False,
@@ -35,14 +36,15 @@ def visualize(images:Iterator[Path], cls: int):
         print(r.path)
         while True:
             key = waitKey(100)
-            if key == 32: #Space
+            if key == 32:  # Space
                 break
-            if key == 27: #Esc
+            if key == 27:  # Esc
                 return
 
 
 def main():
     visualize(map(Path, argv[1:]), 0)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

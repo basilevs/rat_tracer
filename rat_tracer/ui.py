@@ -1,30 +1,26 @@
-from logging import getLogger, basicConfig, DEBUG
-from sys import argv, exit
+from logging import DEBUG, basicConfig, getLogger
 from pathlib import Path
+from signal import SIGINT, signal
+from sys import argv, exit
 from time import time
 from typing import TypeVar
-from signal import signal, SIGINT
 
 import cv2
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 from cv2.typing import MatLike
-
-from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize, QTimer, QUrl
+from PySide6.QtCore import Property, QObject, QSize, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtQml import QQmlApplicationEngine, QmlElement
+from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat, QVideoSink
+from PySide6.QtQml import QmlElement, QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
-from PySide6.QtMultimedia import QVideoSink, QVideoFrame, QVideoFrameFormat
 from PySide6.QtWidgets import QApplication
-
-
 from ultralytics import YOLO
 
 from rat_tracer.coverage import CoverageHistory
-from rat_tracer.paint import apply_red_mask, presence_frames
 from rat_tracer.lib import model_path
+from rat_tracer.paint import apply_red_mask, presence_frames
 
-
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 logger = getLogger(__name__)
@@ -32,6 +28,7 @@ logger.setLevel(DEBUG)
 
 QML_IMPORT_NAME = "MyBackend"
 QML_IMPORT_MAJOR_VERSION = 1
+
 
 class CoverageComputer(QThread):
     frameReady = Signal()
@@ -84,8 +81,8 @@ class VideoMasker(QObject):
         self._cap = VideoCapture(str(self._video))
         self._total_frame_count = self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
         t = CoverageComputer(self._history, self._video)
-        self._thread  = t
-        self._thread_connection =  t.frameReady.connect(self._on_frame_ready)
+        self._thread = t
+        self._thread_connection = t.frameReady.connect(self._on_frame_ready)
         self._thread.start()
 
     video = Property(str, _get_video, _set_video)
@@ -102,7 +99,7 @@ class VideoMasker(QObject):
         if self._playing:
             cap = self._cap
             if cap:
-                self.position = float(len(self._history)-1) / self._total_frame_count
+                self.position = float(len(self._history) - 1) / self._total_frame_count
 
     def _get_video_output(self) -> QObject:
         return self._video_output
@@ -171,7 +168,7 @@ class VideoMasker(QObject):
 
     @Slot()
     def _do_render(self):
-        try: 
+        try:
             frame = QVideoFrame()
             while self._position != self._pending_position:
                 new_value = self._pending_position
@@ -201,6 +198,7 @@ class VideoMasker(QObject):
         finally:
             self._do_render_pending = False
 
+
 def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""
 
@@ -225,13 +223,12 @@ def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
         arr_bytes = bgra_arr.tobytes()
 
         # Reassign the memoryview slice with our array data
-        frame_data[:len(arr_bytes)] = arr_bytes
+        frame_data[: len(arr_bytes)] = arr_bytes
 
         # Always unmap when finished to lock the data into the frame!
         frame.unmap()
 
     return frame
-
 
 
 def print_qobject_children(obj: QObject, indent: str = ""):
@@ -242,11 +239,10 @@ def print_qobject_children(obj: QObject, indent: str = ""):
         print_qobject_children(child, indent + "  ")
 
 
-
-
-def handleIntSignal():  # pylint: disable=unused-argument
+def handleIntSignal():
     print("SIGINT received, quitting application...")
     QApplication.quit()
+
 
 def main():
     basicConfig()
@@ -270,7 +266,7 @@ def main():
 
     app.aboutToQuit.connect(masker.reset)
 
-    exit_code = app.exec() # exit immediately to investigate QML binding issues
+    exit_code = app.exec()  # exit immediately to investigate QML binding issues
 
     del engine
     exit(exit_code)

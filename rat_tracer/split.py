@@ -16,7 +16,7 @@ def split_dataset(
         labels_src = gt_dir / "annotations"
     else:
         images_src = gt_dir / "images"
-        
+
     assert labels_src.is_dir()
 
     images = sorted(images_src.glob("*"))

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from rat_tracer.lib import MODEL_ENV_VAR, model_path
 
 

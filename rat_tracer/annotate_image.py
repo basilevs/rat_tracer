@@ -1,4 +1,3 @@
-from pprint import pprint
 from sys import argv
 
 from ultralytics import YOLO

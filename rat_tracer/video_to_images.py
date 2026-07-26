@@ -1,7 +1,9 @@
-from typing import Iterator
-from cv2 import imwrite, VideoCapture, CAP_PROP_POS_FRAMES
+from collections.abc import Iterator
 from pathlib import Path
 from sys import argv
+
+from cv2 import CAP_PROP_POS_FRAMES, VideoCapture, imwrite
+
 
 def _main():
     VIDEO = Path(argv[1])
@@ -11,10 +13,11 @@ def _main():
     OUT_DIR = Path("images")
     extract_frames(VIDEO, FRAMES, OUT_DIR)
 
+
 def extract_frames(video: Path, frames: Iterator[int], output_directory: Path):
     output_directory.mkdir(exist_ok=True)
 
-    filename_prefix = video.with_suffix("").name;
+    filename_prefix = video.with_suffix("").name
     cap = VideoCapture(video)
 
     for frame in frames:
@@ -26,6 +29,7 @@ def extract_frames(video: Path, frames: Iterator[int], output_directory: Path):
 
     cap.release()
 
-__all__ = ['extract_frames']
+
+__all__ = ["extract_frames"]
 if __name__ == "__main__":
     _main()

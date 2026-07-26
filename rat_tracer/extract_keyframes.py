@@ -1,8 +1,9 @@
 """Extracts annotation keyframes as rectangles"""
 
+from collections.abc import Iterator
 from pathlib import Path
 from xml.etree import ElementTree
-from typing import Dict, Generator, Iterator, Tuple
+
 from imageio import imwrite
 from imageio_ffmpeg import read_frames
 from numpy import frombuffer, ndarray, uint8
@@ -11,7 +12,7 @@ OUT_DIR = Path("data/images/Train")
 OUT_DIR.mkdir(exist_ok=True)
 
 
-def iter_frames(video_path, *, pix_fmt="rgb24") -> Iterator[Tuple[int, ndarray]]:
+def iter_frames(video_path, *, pix_fmt="rgb24") -> Iterator[tuple[int, ndarray]]:
     """
     Yield (frame_index, frame_array) for all decoded frames.
 
@@ -28,7 +29,8 @@ def iter_frames(video_path, *, pix_fmt="rgb24") -> Iterator[Tuple[int, ndarray]]
         frame = frame.reshape((height, width, 3))
         yield idx, frame
 
-def extract_box_coordinates(xml_path: str) -> Iterator[Tuple[int, float, float, float, float]]:
+
+def extract_box_coordinates(xml_path: str) -> Iterator[tuple[int, float, float, float, float]]:
     """
     Parse an XML file and yield rectangle coordinates from <box> elements under <track>.
 
@@ -43,12 +45,12 @@ def extract_box_coordinates(xml_path: str) -> Iterator[Tuple[int, float, float, 
 
     for box in root.findall('./track[@label="rat"]/box[@keyframe="1"]'):
         try:
-            if box.get('occluded') == '1':
+            if box.get("occluded") == "1":
                 continue
-            if box.get('outside') == '1':
+            if box.get("outside") == "1":
                 continue
             coords = (
-                int(box.get('frame')),
+                int(box.get("frame")),
                 float(box.get("xtl")),
                 float(box.get("ytl")),
                 float(box.get("xbr")),
@@ -59,7 +61,8 @@ def extract_box_coordinates(xml_path: str) -> Iterator[Tuple[int, float, float, 
             # Skip boxes with missing or non-float attributes
             continue
 
-def extract_region(frame:ndarray, x1:float, y1:float, x2:float, y2:float):
+
+def extract_region(frame: ndarray, x1: float, y1: float, x2: float, y2: float):
     """
     Extract a rectangular region from a frame.
 
@@ -68,21 +71,23 @@ def extract_region(frame:ndarray, x1:float, y1:float, x2:float, y2:float):
 
     Returns a view (no copy) when possible.
     """
-    return frame[int(y1):int(y2), int(x1):int(x2)]
+    return frame[int(y1) : int(y2), int(x1) : int(x2)]
+
 
 def main():
-    by_frame: Dict[int, Tuple[float, float, float, float]] = {}
-    for i in extract_box_coordinates('input/annotations.xml'):
+    by_frame: dict[int, tuple[float, float, float, float]] = {}
+    for i in extract_box_coordinates("input/annotations.xml"):
         by_frame[i[0]] = i[1:]
 
     for idx, frame in iter_frames("input/input.mp4"):
         if idx not in by_frame:
             continue
         by_frame.pop(idx)
-        #frame = extract_region(frame, *region)
+        # frame = extract_region(frame, *region)
         # data/images/Train/frame_000006.png
         imwrite(OUT_DIR / f"frame_{idx:0>6}.png", frame)
-        #imwrite(OUT_DIR / f"frame_{idx}.png", frame)
+        # imwrite(OUT_DIR / f"frame_{idx}.png", frame)
+
 
 if __name__ == "__main__":
     main()
