@@ -1,30 +1,20 @@
 from logging import getLogger, basicConfig, DEBUG
-from pprint import pprint
 from sys import argv, path, exit
 from pathlib import Path
-import random
-import sys
-from threading import Lock
 from time import time
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 
 from signal import signal, SIGINT
-from threading import Lock
 
-from PySide6.QtCore import Property, QObject, QThread, Slot
-from PySide6.QtCore import Qt, Signal
-from PySide6 import QtCore, QtWidgets, QtGui
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
-from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QVideoFrame
-from PySide6.QtWidgets import QApplication, QSlider
+from PySide6.QtMultimedia import QVideoSink, QVideoFrame, QVideoFrameFormat
+from PySide6.QtWidgets import QApplication
 from PySide6.QtQuick import QQuickItem
-from PySide6.QtCore import QSize
-from PySide6.QtMultimedia import QVideoFrameFormat
 
 import cv2
 import numpy as np
@@ -203,11 +193,11 @@ def print_qobject_children(obj: QObject, indent: str = ""):
 
 
 
-def handleIntSignal(*args):
+def handleIntSignal():  # pylint: disable=unused-argument
     print("SIGINT received, quitting application...")
     QApplication.quit()
 
-if __name__ == "__main__":
+def main():
     basicConfig()
     app = QGuiApplication(argv)
 
@@ -236,6 +226,9 @@ if __name__ == "__main__":
 
     exit_code = app.exec() # exit immediately to investigate QML binding issues
 
-
     del engine
     exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
