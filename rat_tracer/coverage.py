@@ -1,7 +1,7 @@
 import contextlib
 import os
 import zlib
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
 
 from numpy import bool_, dtype, frombuffer, ndarray, packbits, uint8, unpackbits, zeros
@@ -40,8 +40,10 @@ class CoverageHistory:
         self.history: list[HistorySlot] = []
         # ``append`` stores the raw mask immediately and offloads compression to
         # these workers so the inference thread is not blocked. ``_generation``
-        # invalidates in-flight tasks after a ``clear``.
+        # invalidates in-flight tasks after a ``clear``; ``_pending`` tracks the
+        # not-yet-finished futures so ``clear`` can cancel the queued ones.
         self._generation = 0
+        self._pending: set[Future] = set()
         self._executor = ThreadPoolExecutor(
             max_workers=_COMPRESS_WORKERS,
             thread_name_prefix="coverage-compress",
@@ -64,6 +66,7 @@ class CoverageHistory:
         del state["_lock"]
         del state["_executor"]
         state.pop("_generation", None)
+        state.pop("_pending", None)
         state.pop("history", None)
         state.pop("visited", None)
 
@@ -82,16 +85,14 @@ class CoverageHistory:
 
     def __setstate__(self, state: dict):
         deltas = state.pop("_delta_history", None)
+        # Establish the transient runtime state (lock, generation, executor) and
+        # defaults exactly as a fresh instance would; pickle bypasses __init__.
+        CoverageHistory.__init__(self)
+        # Overlay the pickled persistent fields (width/height, and for legacy
+        # pickles also history/visited).
         self.__dict__.update(state)
-        assert not getattr(self, "_lock", None), "unpickled instance already has a lock"
-        self._lock = Lock()
-        self._generation = 0
-        self._executor = ThreadPoolExecutor(
-            max_workers=_COMPRESS_WORKERS,
-            thread_name_prefix="coverage-compress",
-        )
         if deltas is None:
-            # Legacy / non-delta pickle: ``history`` and ``visited`` are already
+            # Legacy / non-delta pickle: ``history`` and ``visited`` were
             # restored verbatim by the ``__dict__`` update above.
             return
 
@@ -128,21 +129,25 @@ class CoverageHistory:
 
     def clear(self):
         with self._lock:
-            # Invalidate any in-flight compression tasks and swap in a fresh
-            # executor so their results are dropped instead of writing into the
-            # cleared history.
+            # Invalidate any in-flight compression tasks; results from tasks that
+            # are already running are dropped via the generation check, and the
+            # queued ones are cancelled below without tearing down the pool.
             self._generation += 1
             self.width = None
             self.height = None
             self.visited = None
             self.history.clear()
-            old_executor = self._executor
-            self._executor = ThreadPoolExecutor(
-                max_workers=_COMPRESS_WORKERS,
-                thread_name_prefix="coverage-compress",
-            )
-        # Cancel queued tasks and stop the old workers without holding the lock.
-        old_executor.shutdown(wait=False, cancel_futures=True)
+            pending = self._pending
+            self._pending = set()
+        # Cancel queued tasks without holding the lock. Already-running tasks
+        # cannot be cancelled but their results are discarded by the generation
+        # check, so the executor is safe to keep and reuse.
+        for future in pending:
+            future.cancel()
+
+    def _discard_pending(self, future: Future) -> None:
+        with self._lock:
+            self._pending.discard(future)
 
     def __del__(self):
         executor = getattr(self, "_executor", None)
@@ -202,10 +207,15 @@ class CoverageHistory:
             self.history.append(snapshot)
             generation = self._generation
             executor = self._executor
-        # Executor may be shut down by a concurrent clear(); the raw slot it
+        # Executor may be shut down during interpreter teardown; the raw slot it
         # belonged to has been cleared too, so a failed submit is safe to drop.
         with contextlib.suppress(RuntimeError):
-            executor.submit(self._compress_slot, generation, idx, snapshot)
+            future = executor.submit(self._compress_slot, generation, idx, snapshot)
+            with self._lock:
+                self._pending.add(future)
+            # Drop the future from the pending set once it settles so the set
+            # only ever holds outstanding work for ``clear`` to cancel.
+            future.add_done_callback(self._discard_pending)
         return snapshot
 
     def __getitem__(self, frame_idx: int) -> MaskFrame:
