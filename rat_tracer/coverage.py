@@ -6,7 +6,8 @@ from numpy import bool_, dtype, frombuffer, ndarray, packbits, uint8, unpackbits
 type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
 
 # Highest zlib level: best ratio, used for the live history and pickled deltas.
-_MAX_ENCODE_LEVEL = 9
+# Smaller values give better GPU utilization.
+_MAX_ENCODE_LEVEL = 5
 # Fast zlib level for rebuilding RAM blobs on unpickle, where the per-frame
 # re-encode dominates load time and the ratio only affects transient RAM use.
 _RAM_ENCODE_LEVEL = 1
