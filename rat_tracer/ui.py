@@ -1,4 +1,4 @@
-from logging import DEBUG, basicConfig, getLogger
+from logging import DEBUG, INFO, basicConfig, getLogger
 from pathlib import Path
 from signal import SIGINT, signal
 from sys import argv, exit
@@ -25,7 +25,7 @@ T = TypeVar("T")
 
 
 logger = getLogger(__name__)
-logger.setLevel(DEBUG)
+logger.setLevel(INFO)
 
 QML_IMPORT_NAME = "MyBackend"
 QML_IMPORT_MAJOR_VERSION = 1
@@ -246,12 +246,12 @@ def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
     return frame
 
 
-def print_qobject_children(obj: QObject, indent: str = ""):
-    """Recursively prints the QObject tree for debugging purposes."""
-    prefix = indent
-    print(f"{prefix}{obj.__class__.__name__} (objectName='{obj.objectName()}')")
+def format_qobject_children(obj: QObject, indent: str = "") -> str:
+    """Recursively formats the QObject tree as an indented string for debugging."""
+    lines = [f"{indent}{obj.__class__.__name__} (objectName='{obj.objectName()}')"]
     for child in obj.children():
-        print_qobject_children(child, indent + "  ")
+        lines.append(format_qobject_children(child, indent + "  "))
+    return "\n".join(lines)
 
 
 def handleIntSignal(signum, frame):
@@ -275,7 +275,8 @@ def main():
         exit(-1)
 
     root = engine.rootObjects()[0]
-    print_qobject_children(root)
+    if logger.isEnabledFor(DEBUG):
+        logger.debug("QObject tree:\n%s", format_qobject_children(root))
 
     masker = root.findChild(VideoMasker)
 
