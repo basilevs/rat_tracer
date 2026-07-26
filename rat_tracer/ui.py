@@ -1,23 +1,20 @@
-from logging import getLogger, basicConfig, DEBUG, root
+from logging import getLogger, basicConfig, DEBUG
 from sys import argv, path, exit
 from pathlib import Path
 from time import time
 from typing import TypeVar
-from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
-
 from signal import signal, SIGINT
 
-from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize, QTimer, Qt
+import cv2
+from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
+from cv2.typing import MatLike
+
+from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtMultimedia import QVideoSink, QVideoFrame, QVideoFrameFormat
 from PySide6.QtWidgets import QApplication
-from PySide6.QtQuick import QQuickItem
-
-import cv2
-from cv2.typing import MatLike
-import numpy as np
 
 
 from ultralytics import YOLO
@@ -43,7 +40,7 @@ class CoverageComputer(QThread):
         super().__init__(parent)
         self._history = history
         self._video = video
-        
+
     def run(self):
         start = time()
         logger.info("Processing video: %s", self._video)
@@ -65,42 +62,43 @@ class VideoMasker(QObject):
         self._history = CoverageHistory()
         self._position = 0.0
         self._video = Path("input/2026-02-07-2.mp4")
-        self._threadConnection = None
+        self._thread_connection = None
         self._thread = None
         self._playing = True
+        self._video_output = None
         self._video_sink = QVideoSink()
         self._cap = None
+        self._total_frame_count = 0.0
         self._frame_count = 0
         self._pending_position = None
         self._do_render_pending = False
 
-    @Property(str)
-    def video(self):
+    def _get_video(self) -> str:
         return str(self._video)
 
-    @video.setter
-    def video(self, new_video: str):
+    def _set_video(self, new_video: str) -> None:
         self.reset()
         self._video = Path(new_video)
         self._cap = VideoCapture(str(self._video))
+        self._total_frame_count = self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
         t = CoverageComputer(self._history, self._video)
         self._thread  = t
-        self._threadConnection =  t.frameReady.connect(self._on_frame_ready)
+        self._thread_connection =  t.frameReady.connect(self._on_frame_ready)
         self._thread.start()
+
+    video = Property(str, _get_video, _set_video)
 
     @Slot()
     def _on_frame_ready(self):
         if self._playing:
             cap = self._cap
             if cap:
-                self.position = float(len(self._history)-1) / self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                self.position = float(len(self._history)-1) / self._total_frame_count
 
-    @Property(QObject)
-    def video_output(self):
+    def _get_video_output(self) -> QObject:
         return self._video_output
 
-    @video_output.setter
-    def video_output(self, video_output: QObject):
+    def _set_video_output(self, video_output: QObject) -> None:
         self._video_output = video_output
         if isinstance(video_output, QVideoSink):
             self._video_sink = video_output
@@ -110,12 +108,14 @@ class VideoMasker(QObject):
             raise ValueError("video_output must be a QVideoSink or contain one as a child")
         self._on_frame_ready()
 
+    video_output = Property(QObject, _get_video_output, _set_video_output)
+
     @Slot()
     def reset(self):
         logger.debug("Resetting VideoMasker")
         t = self._thread
         if t:
-            t.frameReady.disconnect(self._threadConnection)
+            t.frameReady.disconnect(self._thread_connection)
             t.requestInterruption()
             t.wait()
         self._thread = None
@@ -123,15 +123,16 @@ class VideoMasker(QObject):
         self._history.clear()
         self._position = 0.0
         self._cap = None
+        self._total_frame_count = 0.0
 
-    @Property(bool)
-    def playing(self):
+    def _get_playing(self) -> bool:
         return self._playing
 
-    @playing.setter
-    def playing(self, value: bool):
+    def _set_playing(self, value: bool) -> None:
         self._playing = value
         self._on_frame_ready()
+
+    playing = Property(bool, _get_playing, _set_playing)
 
     @Property(str, notify=position_changed)
     def time_text(self):
@@ -145,12 +146,10 @@ class VideoMasker(QObject):
         minutes, seconds = divmod(rem, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-    @Property(float, notify=position_changed)
-    def position(self):
+    def _get_position(self) -> float:
         return self._position
 
-    @position.setter
-    def position(self, new_value: float):
+    def _set_position(self, new_value: float) -> None:
         # Prevent infinite binding loops by only updating if the value actually changed
         if self._pending_position != new_value:
             # Coalesce: overwrite the pending value; schedule a single render if not already queued
@@ -158,6 +157,8 @@ class VideoMasker(QObject):
             if not self._do_render_pending:
                 self._do_render_pending = True
                 QTimer.singleShot(0, self._do_render)
+
+    position = Property(float, _get_position, _set_position, notify=position_changed)
 
     @Slot()
     def _do_render(self):
@@ -193,33 +194,33 @@ class VideoMasker(QObject):
 
 def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""
-    
+
     # 1. Convert BGR to BGRA for reliable memory alignment in Qt
     bgra_arr = cv2.cvtColor(bgr_arr, cv2.COLOR_BGR2BGRA)
     height, width, _ = bgra_arr.shape
-    
+
     # 2. Define the video frame format
     size = QSize(width, height)
     pixel_format = QVideoFrameFormat.PixelFormat.Format_BGRA8888
     frame_format = QVideoFrameFormat(size, pixel_format)
-    
+
     # 3. Instantiate the empty frame
     frame = QVideoFrame(frame_format)
-    
+
     # 4. Map the memory, copy the bytes, and unmap
     if frame.map(QVideoFrame.MapMode.WriteOnly):
         # frame.bits(0) returns a Python memoryview of the buffer
         frame_data = frame.bits(0)
-        
+
         # Convert the NumPy array to raw bytes
         arr_bytes = bgra_arr.tobytes()
-        
+
         # Reassign the memoryview slice with our array data
         frame_data[:len(arr_bytes)] = arr_bytes
-        
+
         # Always unmap when finished to lock the data into the frame!
         frame.unmap()
-        
+
     return frame
 
 
