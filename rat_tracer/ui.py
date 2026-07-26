@@ -11,18 +11,24 @@ from typing import Generic, TypeVar
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 
 from signal import signal, SIGINT
+from threading import Lock
 
 from PySide6.QtCore import Property, QObject, QThread, Slot
 from PySide6.QtCore import Qt, Signal
 from PySide6 import QtCore, QtWidgets, QtGui
 from PySide6.QtCore import QObject, Signal, Slot
-from threading import Lock
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtMultimedia import QMediaPlayer, QVideoSink, QVideoFrame
 from PySide6.QtWidgets import QApplication, QSlider
 from PySide6.QtQuick import QQuickItem
+from PySide6.QtCore import QSize
+from PySide6.QtMultimedia import QVideoFrameFormat
+
+import cv2
+import numpy as np
+
 
 from ultralytics import YOLO
 
@@ -33,10 +39,6 @@ from rat_tracer.lib import best_model_path
 
 T = TypeVar('T')
 
-import cv2
-import numpy as np
-from PySide6.QtCore import QSize
-from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat
 
 logger = getLogger(__name__)
 logger.setLevel(DEBUG)
