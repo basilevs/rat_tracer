@@ -1,3 +1,4 @@
+import argparse
 from logging import DEBUG, INFO, basicConfig, getLogger
 from pathlib import Path
 from signal import SIGINT, signal
@@ -261,6 +262,14 @@ def handleIntSignal(signum, frame):
 
 def main():
     basicConfig()
+    parser = argparse.ArgumentParser(description="Rat Tracer UI")
+    parser.add_argument(
+        "-v", "--video", type=Path, default=None, help="Video file to open on startup"
+    )
+    args, _ = parser.parse_known_args(argv[1:])
+    if args.video is not None and not args.video.is_file():
+        parser.error(f"video file not found: {args.video}")
+
     app = QGuiApplication(argv)
 
     signal(SIGINT, handleIntSignal)
@@ -282,6 +291,9 @@ def main():
 
     assert masker is not None
     app.aboutToQuit.connect(masker.reset)
+
+    if args.video is not None:
+        masker.video = str(args.video)  # type: ignore[assignment]  # PySide Property setter
 
     exit_code = app.exec()  # exit immediately to investigate QML binding issues
 

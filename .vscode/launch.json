@@ -9,6 +9,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "rat_tracer/ui.py",
+            "args": ["--video", "input/2026-01-15-2.mp4"],
             "console": "integratedTerminal"
         },
         {
