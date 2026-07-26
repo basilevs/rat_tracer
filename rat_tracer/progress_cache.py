@@ -3,6 +3,7 @@ import tempfile
 import zlib
 from logging import getLogger
 from pathlib import Path
+from time import perf_counter
 
 from rat_tracer.coverage import CoverageHistory
 
@@ -13,6 +14,7 @@ logger = getLogger(__name__)
 
 def video_key(path: Path) -> str:
     """Return a hex crc32 fingerprint of the full video file."""
+    start = perf_counter()
     crc = 0
     size = 0
     with open(path, "rb") as fh:
@@ -21,7 +23,17 @@ def video_key(path: Path) -> str:
             size += len(chunk)
     # Mix file size into the key to distinguish truncated vs. full files
     crc = zlib.crc32(size.to_bytes(8, "little"), crc)
-    return f"{crc & 0xFFFFFFFF:08x}"
+    key = f"{crc & 0xFFFFFFFF:08x}"
+    elapsed = perf_counter() - start
+    logger.debug(
+        "Hashed %s (%.1f MiB) in %.3fs -> key %s (%s)",
+        path.name,
+        size / (1 << 20),
+        elapsed,
+        key,
+        cache_path(key),
+    )
+    return key
 
 
 def cache_dir() -> Path:
