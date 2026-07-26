@@ -1,5 +1,5 @@
 from logging import getLogger, basicConfig, DEBUG
-from sys import argv, path, exit
+from sys import argv, exit
 from pathlib import Path
 from time import time
 from typing import TypeVar
@@ -247,9 +247,9 @@ def main():
 
     QQuickStyle.setStyle("Material")
     engine = QQmlApplicationEngine()
-    # Add the current directory to the import paths and load the main module.
-    engine.addImportPath(path[0])
-    engine.loadFromModule(".", "Main")
+    # VideoMasker is registered as the "MyBackend" QML module via @QmlElement,
+    # so no import path is needed. Load Main.qml directly by absolute path.
+    engine.load(Path(__file__).parent / "Main.qml")
 
     if not engine.rootObjects():
         exit(-1)
