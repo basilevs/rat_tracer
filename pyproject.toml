@@ -35,3 +35,12 @@ Changelog = "https://github.com/basilevs/rat_tracer/commits/main/"
 
 [project.scripts]
 #where = "rat_tracer.where:main"
+
+[tool.pylint.typecheck]
+# PySide6 and cv2 are C-extension modules whose members are generated at
+# runtime; let pylint import them and treat cv2 members as dynamic.
+extension-pkg-allow-list = ["PySide6", "cv2"]
+generated-members = ["cv2.*"]
+
+[tool.pylint.main]
+ignored-modules = ["cv2"]
