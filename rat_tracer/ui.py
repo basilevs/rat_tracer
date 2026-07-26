@@ -19,6 +19,7 @@ from ultralytics import YOLO
 from rat_tracer.coverage import CoverageHistory
 from rat_tracer.lib import model_path
 from rat_tracer.paint import apply_red_mask, presence_frames
+from rat_tracer.progress_cache import load_progress, save_progress, video_key
 
 T = TypeVar("T")
 
@@ -37,15 +38,26 @@ class CoverageComputer(QThread):
         super().__init__(parent)
         self._history = history
         self._video = video
+        self._key = video_key(video)
 
     def run(self):
         start = time()
         logger.info("Processing video: %s", self._video)
-        for _, mask in presence_frames(self._video, model=YOLO(model_path())):
+        loaded = load_progress(self._key)
+        if loaded is not None:
+            self._history.replace_with(loaded)
+            self.frameReady.emit()
+        start_frame = len(self._history)
+        logger.info("Starting from frame %d", start_frame)
+        for _, mask in presence_frames(
+            self._video, model=YOLO(model_path()), start_frame=start_frame
+        ):
             self._history.append(mask)
             if self.isInterruptionRequested():
+                save_progress(self._history, self._key)
                 return
             self.frameReady.emit()
+        save_progress(self._history, self._key)
         logger.info("Finished processing video: %s in %.2f seconds", self._video, time() - start)
 
 

@@ -21,6 +21,30 @@ class CoverageHistory:
         self.visited = None
         self.history: list[bytes] = []
 
+    def __getstate__(self):
+        with self._lock:
+            state = self.__dict__.copy()
+        del state["_lock"]
+        return state
+
+    def __setstate__(self, state: dict):
+        self.__dict__.update(state)
+        assert not getattr(self, "_lock", None), "unpickled instance already has a lock"
+        self._lock = Lock()
+
+    def replace_with(self, other: "CoverageHistory") -> None:
+        """Atomically replace this instance's state with *other*'s state."""
+        with other._lock:
+            width = other.width
+            height = other.height
+            visited = other.visited
+            history = list(other.history)
+        with self._lock:
+            self.width = width
+            self.height = height
+            self.visited = visited
+            self.history = history
+
     def clear(self):
         with self._lock:
             self.width = None

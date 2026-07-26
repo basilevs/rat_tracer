@@ -9,6 +9,7 @@ from cv2 import (  # type: ignore[attr-defined]
     CAP_PROP_FPS,
     CAP_PROP_FRAME_HEIGHT,
     CAP_PROP_FRAME_WIDTH,
+    CAP_PROP_POS_FRAMES,
     MORPH_ELLIPSE,
     MORPH_OPEN,
     VideoCapture,
@@ -35,7 +36,9 @@ logger = getLogger(__name__)
 type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
 
 
-def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, MaskFrame]]:
+def presence_frames(
+    input_video: Path, model: YOLO, start_frame: int = 0
+) -> Generator[tuple[ndarray, MaskFrame]]:
     cap = VideoCapture(str(input_video))
     try:
         width = int(cap.get(CAP_PROP_FRAME_WIDTH))
@@ -44,7 +47,7 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
         cap.release()
 
     # frame_batches = chunk(video_frames(input_video), 1)
-    frame_batches = generate_in_thread(video_frames(input_video), 15)
+    frame_batches = generate_in_thread(video_frames(input_video, start_frame=start_frame), 15)
     mog = createBackgroundSubtractorMOG2(
         history=500,
         varThreshold=16,
@@ -94,9 +97,11 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
             yield (img, visited)
 
 
-def video_frames(input_video: Path) -> Generator[ndarray]:
+def video_frames(input_video: Path, start_frame: int = 0) -> Generator[ndarray]:
     cap = VideoCapture(str(input_video))
     try:
+        if start_frame > 0:
+            cap.set(CAP_PROP_POS_FRAMES, start_frame)
         while True:
             ret, frame = cap.read()
             if not ret:

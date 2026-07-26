@@ -28,11 +28,11 @@ classifiers = [
 packages=["rat_tracer"]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "pytest-cov"]
 dev = [
+  "rat_tracer[test]",
   "ruff",
   "mypy",
-  "pytest",
 ]
 
 [tool.pytest.ini_options]
