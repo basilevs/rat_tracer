@@ -4,4 +4,4 @@ from rat_tracer.lib import model_path
 
 model = YOLO(model_path())
 print(model.task)
-print(model.model.args)
+print(model.model.args)  # type: ignore[union-attr]

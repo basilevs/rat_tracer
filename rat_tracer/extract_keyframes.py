@@ -49,12 +49,19 @@ def extract_box_coordinates(xml_path: str) -> Iterator[tuple[int, float, float, 
                 continue
             if box.get("outside") == "1":
                 continue
+            frame = box.get("frame")
+            xtl = box.get("xtl")
+            ytl = box.get("ytl")
+            xbr = box.get("xbr")
+            ybr = box.get("ybr")
+            if frame is None or xtl is None or ytl is None or xbr is None or ybr is None:
+                continue
             coords = (
-                int(box.get("frame")),
-                float(box.get("xtl")),
-                float(box.get("ytl")),
-                float(box.get("xbr")),
-                float(box.get("ybr")),
+                int(frame),
+                float(xtl),
+                float(ytl),
+                float(xbr),
+                float(ybr),
             )
             yield coords
         except (TypeError, ValueError):

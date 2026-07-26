@@ -22,11 +22,14 @@ def extract_box_coordinates(xml_path: Path) -> Iterator[tuple[int, float, float,
                 continue
             if box.get("outside") == "1":
                 continue
-            points = box.get("points").split(";")
-            minx = 10000
-            maxx = 0
-            miny = 10000
-            maxy = 0
+            points_attr = box.get("points")
+            if points_attr is None:
+                continue
+            points = points_attr.split(";")
+            minx = 10000.0
+            maxx = 0.0
+            miny = 10000.0
+            maxy = 0.0
             for p in points:
                 x, y = map(float, p.split(","))
                 minx = min(x, minx)
@@ -34,8 +37,11 @@ def extract_box_coordinates(xml_path: Path) -> Iterator[tuple[int, float, float,
                 maxx = max(x, maxx)
                 maxy = max(y, maxy)
 
+            frame = box.get("frame")
+            if frame is None:
+                continue
             coords = (
-                int(box.get("frame")),
+                int(frame),
                 float((minx + maxx) / 852 / 2),
                 float((miny + maxy) / 480 / 2),
                 float((maxx - minx) / 852),
