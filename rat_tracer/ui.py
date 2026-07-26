@@ -9,7 +9,7 @@ import cv2
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 from cv2.typing import MatLike
 
-from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize, QTimer
+from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize, QTimer, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -61,7 +61,7 @@ class VideoMasker(QObject):
         super().__init__(parent)
         self._history = CoverageHistory()
         self._position = 0.0
-        self._video = Path("input/2026-02-07-2.mp4")
+        self._video = None
         self._thread_connection = None
         self._thread = None
         self._playing = True
@@ -74,10 +74,12 @@ class VideoMasker(QObject):
         self._do_render_pending = False
 
     def _get_video(self) -> str:
-        return str(self._video)
+        return str(self._video) if self._video else ""
 
     def _set_video(self, new_video: str) -> None:
         self.reset()
+        if not new_video:
+            return
         self._video = Path(new_video)
         self._cap = VideoCapture(str(self._video))
         self._total_frame_count = self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
@@ -87,6 +89,13 @@ class VideoMasker(QObject):
         self._thread.start()
 
     video = Property(str, _get_video, _set_video)
+
+    @Slot(QUrl)
+    def openVideo(self, url: QUrl) -> None:
+        """Load a video from a QML file URL (from a file dialog or drag-and-drop)."""
+        local_path = url.toLocalFile()
+        if local_path:
+            self.video = local_path
 
     @Slot()
     def _on_frame_ready(self):
@@ -257,10 +266,7 @@ def main():
     root = engine.rootObjects()[0]
     print_qobject_children(root)
 
-    video = Path("input/2026-02-07-2.mp4")
-
     masker = root.findChild(VideoMasker)
-    masker.video = str(video)
 
     app.aboutToQuit.connect(masker.reset)
 

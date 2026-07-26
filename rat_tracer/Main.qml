@@ -3,6 +3,7 @@ import QtQuick.Layouts 1.11
 import QtQuick.Controls 2.1
 import QtQuick.Window 2.1
 import QtQuick.Controls.Material 2.1
+import QtQuick.Dialogs
 import QtMultimedia
 import MyBackend
 
@@ -18,6 +19,12 @@ ApplicationWindow {
         id: "masker"
         playing: page.playing
         video_output: videoOutput
+    }
+    FileDialog {
+        id: fileDialog
+        title: "Open video"
+        nameFilters: ["Video files (*.mp4 *.mov *.avi *.mkv)", "All files (*)"]
+        onAccepted: masker.openVideo(selectedFile)
     }
     ColumnLayout {
         spacing: 2
@@ -40,6 +47,14 @@ ApplicationWindow {
                     page.playing = !page.playing
                 }
             }
+            DropArea {
+                anchors.fill: parent
+                onDropped: (drop) => {
+                    if (drop.hasUrls) {
+                        masker.openVideo(drop.urls[0])
+                    }
+                }
+            }
         }
         Slider {
             id: "slider"
@@ -49,6 +64,11 @@ ApplicationWindow {
             value: masker.position
         }
         RowLayout {
+            Button {
+                text: "Open…"
+                Layout.alignment: Qt.AlignHCenter
+                onClicked: fileDialog.open()
+            }
             Button {
                 text: page.playing ? "Pause" : "Play"
                 Layout.alignment: Qt.AlignHCenter
