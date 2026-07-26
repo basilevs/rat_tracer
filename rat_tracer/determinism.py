@@ -22,7 +22,9 @@ def is_expected(files: list[Path]):
         files, stream=True, imgsz=640, verbose=False, rect=False, workers=0, deterministic=True
     )
     result = next(i for i in resultsIterator if Path(i.path) == file_of_interest)
-    return 0 not in result.boxes.cls
+    boxes = result.boxes
+    assert boxes is not None
+    return 0 not in boxes.cls
 
 
 assert is_expected([file_of_interest])  # pass

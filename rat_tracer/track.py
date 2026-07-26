@@ -19,13 +19,17 @@ LABYRINTH_MARGIN = 0.1
 def save_result(idx: int, results: Results):
     height, width = results.orig_shape
     data = frombuffer(results.orig_img, dtype=uint8)
-    name = Path(results.path).with_suffix("").name
+    path = results.path
+    assert path is not None
+    name = Path(path).with_suffix("").name
     data = data.reshape((height, width, 3))
     filename = f"{name}_{idx:0>6}.jpg"
-    target_dir = Path(results.save_dir) / "track_loss"
+    save_dir = results.save_dir
+    assert save_dir is not None
+    target_dir = Path(save_dir) / "track_loss"
     with suppress(FileExistsError):
         mkdir(target_dir)
-    results.save(target_dir / filename)
+    results.save(str(target_dir / filename))
 
 
 def normalize_box(box, width, height):
@@ -55,12 +59,13 @@ def near_border(box, border, margin):
 
 def extract_labyrinth_box(results: Results):
     """Return normalized labyrinth box (0-1) or None"""
-    if results.boxes.cls is None:
+    boxes = results.boxes
+    if boxes is None or boxes.cls is None:
         return None
 
     height, width = results.orig_shape
 
-    for box, cls in zip(results.boxes.xyxy.tolist(), results.boxes.cls.tolist(), strict=True):
+    for box, cls in zip(boxes.xyxy.tolist(), boxes.cls.tolist(), strict=True):
         if int(cls) == LABYRINTH_CLASS:
             return normalize_box(box, width, height)
 
@@ -69,12 +74,15 @@ def extract_labyrinth_box(results: Results):
 
 def find_box_for_track(results: Results, track_id):
     """Return normalized box (0-1) for the given track_id using results.orig_shape"""
-    if results is None or results.boxes.id is None:
+    if results is None:
+        return None
+    boxes = results.boxes
+    if boxes is None or boxes.id is None:
         return None
 
     height, width = results.orig_shape
 
-    for tid, box in zip(results.boxes.id.tolist(), results.boxes.xyxy.tolist(), strict=True):
+    for tid, box in zip(boxes.id.tolist(), boxes.xyxy.tolist(), strict=True):
         if tid == track_id:
             return normalize_box(box, width, height)
 
@@ -82,11 +90,10 @@ def find_box_for_track(results: Results, track_id):
 
 
 def track_set(results: Results) -> set[float]:
-    if results.boxes.id is None or not results.boxes.id.numel():
-        found = set()
-    else:
-        found = set(results.boxes.id.tolist())
-    return found
+    boxes = results.boxes
+    if boxes is None or boxes.id is None:
+        return set()
+    return set(boxes.id.tolist())
 
 
 def main(input_video: Path):
@@ -105,7 +112,7 @@ def main(input_video: Path):
         tracker="botsort.yaml",
     )
 
-    previous_result: Results = None
+    previous_result: Results | None = None
     frames_with_rat = 0
     frames_without_rat = 0
     track_loss = 0
@@ -114,7 +121,8 @@ def main(input_video: Path):
             previous_result = results
             continue
 
-        if (results.boxes.cls == 0).any():
+        boxes = results.boxes
+        if boxes is not None and (boxes.cls == 0).any():
             frames_with_rat += 1
         else:
             frames_without_rat += 1
@@ -146,7 +154,10 @@ def main(input_video: Path):
 
         previous_result = results
 
-    with open(Path(previous_result.save_dir) / "statistics.txt", "w", encoding="utf-8") as f:
+    assert previous_result is not None
+    save_dir = previous_result.save_dir
+    assert save_dir is not None
+    with open(Path(save_dir) / "statistics.txt", "w", encoding="utf-8") as f:
 
         def p(*args):
             print(*args, file=f)
@@ -160,4 +171,4 @@ def main(input_video: Path):
 
 
 if __name__ == "__main__":
-    main(argv[1])
+    main(Path(argv[1]))

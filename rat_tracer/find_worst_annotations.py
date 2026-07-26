@@ -77,10 +77,10 @@ def group_by[T, K](seq: Iterator[T], key: Callable[[T], K]) -> dict[K, list[T]]:
 
 
 def yolo_boxes_to_predictions(boxes: Boxes) -> Iterator[Prediction]:
-    for box in boxes:
-        x1, y1, x2, y2 = map(float, box.xyxy[0])
+    for i in range(len(boxes)):
+        x1, y1, x2, y2 = map(float, boxes.xyxy[i])
         yield Prediction(
-            int(box.cls.item()), Box(Point(x1, y1), Point(x2, y2)), float(box.conf), None
+            int(boxes.cls[i].item()), Box(Point(x1, y1), Point(x2, y2)), float(boxes.conf[i]), None
         )
 
 

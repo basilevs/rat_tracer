@@ -165,6 +165,8 @@ class Predictions:
     def from_results(results: Results):
         predictions = []
         boxes = results.boxes
+        if boxes is None:
+            return Predictions([])
         for i in range(len(boxes)):
             cls = int(boxes.cls[i].item())
             predictions.append(
@@ -318,32 +320,35 @@ def visualize_gt_vs_pred(results: Results, cls: int) -> ndarray:
 
     # ---- Draw predictions (red, dashed-ish) ----
     annotated_boxes: list[Box] = []
-    for box in results.boxes:
-        if cls >= 0 and int(box.cls.item()) != cls:
-            continue
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        conf = float(box.conf)
+    boxes = results.boxes
+    if boxes is not None:
+        for i in range(len(boxes)):
+            if cls >= 0 and int(boxes.cls[i].item()) != cls:
+                continue
+            x1, y1, x2, y2 = map(int, boxes.xyxy[i])
+            conf = float(boxes.conf[i])
 
-        dashed_rectangle(img, (x1, y1), (x2, y2), (0, 0, 200), 2, gap_len=6)
-        box = Box(Point(x1, y1), Point(x2, y2))
-        offset = 40 * [box_iou(box, b) > 0.2 for b in annotated_boxes].count(True)
-        annotated_boxes.append(box)
-        putText(
-            img,
-            f"{conf:.2f}",
-            (x1 + offset + 2, max(15, y1 - 4)),
-            FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 200),
-            1,
-            LINE_AA,
-        )
+            dashed_rectangle(img, (x1, y1), (x2, y2), (0, 0, 200), 2, gap_len=6)
+            box = Box(Point(x1, y1), Point(x2, y2))
+            offset = 40 * [box_iou(box, b) > 0.2 for b in annotated_boxes].count(True)
+            annotated_boxes.append(box)
+            putText(
+                img,
+                f"{conf:.2f}",
+                (x1 + offset + 2, max(15, y1 - 4)),
+                FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 0, 200),
+                1,
+                LINE_AA,
+            )
     return img
 
 
 def nms_callback(predictor: BasePredictor):
 
-    for r in predictor.results:
+    results: list[Results] = predictor.results or []
+    for r in results:
         if r.boxes is None or len(r.boxes) == 0:
             continue
 

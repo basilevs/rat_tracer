@@ -70,11 +70,12 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
             fg = mog.apply(img)
             visited[:] = False
             if results.boxes is not None:
-                for box in results.boxes:
-                    if int(box.cls.item()) != RAT_CLASS:
+                boxes = results.boxes
+                for i in range(len(boxes)):
+                    if int(boxes.cls[i].item()) != RAT_CLASS:
                         continue
 
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    x1, y1, x2, y2 = map(int, boxes.xyxy[i])
                     x1 = max(0, x1)
                     y1 = max(0, y1)
                     x2 = min(width, x2)
