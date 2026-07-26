@@ -17,7 +17,6 @@ ApplicationWindow {
     VideoMasker {
         id: "masker"
         playing: page.playing
-        onFrame_ready: videoOutput.setVideoFrame
     }
     ColumnLayout {
         spacing: 2
@@ -28,6 +27,7 @@ ApplicationWindow {
         Layout.fillHeight: true
         VideoOutput {
             id: videoOutput
+            objectName: "videoOutput"
             Layout.fillWidth: true
             Layout.fillHeight: true
             height: 200

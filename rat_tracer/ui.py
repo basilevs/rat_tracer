@@ -44,7 +44,7 @@ logger.setLevel(DEBUG)
 QML_IMPORT_NAME = "MyBackend"
 QML_IMPORT_MAJOR_VERSION = 1
 
-class BackgroundWorker(QThread):
+class CoverageComputer(QThread):
     frameReady = Signal()
 
     def __init__(self, history: CoverageHistory, video: Path, parent=None):
@@ -66,9 +66,7 @@ class BackgroundWorker(QThread):
 @QmlElement
 class VideoMasker(QObject):
     # 1. Define a signal to notify QML when the property changes
-    frame_ready = Signal(QVideoFrame)
     position_changed = Signal(float)
-
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +76,8 @@ class VideoMasker(QObject):
         self._threadConnection = None
         self._thread = None
         self._playing = True
+        self._video_sink = QVideoSink()
+        self._cap = None
 
     @Property(str)
     def video(self):
@@ -88,8 +88,7 @@ class VideoMasker(QObject):
         self.reset()
         self._video = Path(new_video)
         self._cap = VideoCapture(str(self._video))
-        self._cap.set(CAP_PROP_POS_FRAMES, 0)  # Reset video to the beginning
-        t = BackgroundWorker(self._history, self._video)
+        t = CoverageComputer(self._history, self._video)
         self._thread  = t
         self._threadConnection =  t.frameReady.connect(self._on_frame_ready)
         self._thread.start()
@@ -97,7 +96,19 @@ class VideoMasker(QObject):
     @Slot()
     def _on_frame_ready(self):
         if self._playing:
-            self.position = float(len(self._history)-1) / self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            cap = self._cap
+            if cap:
+                self.position = float(len(self._history)-1) / self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+    @property
+    def video_sink(self):
+        return self._video_sink
+
+    @video_sink.setter
+    def video_sink(self, sink: QVideoSink):
+        self._video_sink = sink
+        self._on_frame_ready()
+
     @Slot()
     def reset(self):
         logger.debug("Resetting VideoMasker")
@@ -132,7 +143,7 @@ class VideoMasker(QObject):
             self._position = new_value
         capture = self._cap
         if not capture:
-            self.frameReady.emit(QVideoFrame())
+            self.video_sink.setVideoFrame(QVideoFrame())
             return
         new_value = int(new_value * capture.get(cv2.CAP_PROP_FRAME_COUNT))
         logger.debug("Sliding to frame %d", new_value)
@@ -145,7 +156,7 @@ class VideoMasker(QObject):
         else:
             apply_red_mask(img, self._history[int(new_value)])
         frame = bgr_array_to_qvideoframe(img)
-        self.frame_ready.emit(frame)
+        self.video_sink.setVideoFrame(frame)
 
 def bgr_array_to_qvideoframe(bgr_arr: np.ndarray) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""
@@ -215,11 +226,14 @@ if __name__ == "__main__":
     video = Path("input/2026-02-07-2.mp4")
 
     masker = root.findChild(VideoMasker)
+    video_output = root.findChild(QQuickItem, "videoOutput")
+    masker.video_sink = video_output.property("videoSink")
     masker.video = str(video)
 
     app.aboutToQuit.connect(masker.reset)
 
-    exit_code = app.exec()
+    exit_code = app.exec() # exit immediately to investigate QML binding issues
+
 
     del engine
     exit(exit_code)
