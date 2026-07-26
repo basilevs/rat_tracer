@@ -1,4 +1,4 @@
-from logging import getLogger, basicConfig, DEBUG
+from logging import getLogger, basicConfig, DEBUG, root
 from sys import argv, path, exit
 from pathlib import Path
 from time import time
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtQuick import QQuickItem
 
 import cv2
+from cv2.typing import MatLike
 import numpy as np
 
 
@@ -92,13 +93,14 @@ class VideoMasker(QObject):
             if cap:
                 self.position = float(len(self._history)-1) / self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
 
-    @property
-    def video_sink(self):
-        return self._video_sink
+    @Property(QQuickItem)
+    def video_output(self):
+        return self._video_output
 
-    @video_sink.setter
-    def video_sink(self, sink: QVideoSink):
-        self._video_sink = sink
+    @video_output.setter
+    def video_output(self, video_output: QQuickItem):
+        self._video_output = video_output
+        self._video_sink = video_output.property("videoSink")
         self._on_frame_ready()
 
     @Slot()
@@ -135,7 +137,7 @@ class VideoMasker(QObject):
             self._position = new_value
         capture = self._cap
         if not capture:
-            self.video_sink.setVideoFrame(QVideoFrame())
+            self._video_sink.setVideoFrame(QVideoFrame())
             return
         new_value = int(new_value * capture.get(cv2.CAP_PROP_FRAME_COUNT))
         logger.debug("Sliding to frame %d", new_value)
@@ -148,9 +150,9 @@ class VideoMasker(QObject):
         else:
             apply_red_mask(img, self._history[int(new_value)])
         frame = bgr_array_to_qvideoframe(img)
-        self.video_sink.setVideoFrame(frame)
+        self._video_sink.setVideoFrame(frame)
 
-def bgr_array_to_qvideoframe(bgr_arr: np.ndarray) -> QVideoFrame:
+def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""
     
     # 1. Convert BGR to BGRA for reliable memory alignment in Qt
@@ -218,8 +220,6 @@ def main():
     video = Path("input/2026-02-07-2.mp4")
 
     masker = root.findChild(VideoMasker)
-    video_output = root.findChild(QQuickItem, "videoOutput")
-    masker.video_sink = video_output.property("videoSink")
     masker.video = str(video)
 
     app.aboutToQuit.connect(masker.reset)

@@ -17,6 +17,7 @@ ApplicationWindow {
     VideoMasker {
         id: "masker"
         playing: page.playing
+        video_output: videoOutput
     }
     ColumnLayout {
         spacing: 2
