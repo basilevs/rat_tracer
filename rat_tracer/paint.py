@@ -68,7 +68,6 @@ def presence_frames(input_video: Path, model: YOLO) -> Generator[tuple[ndarray, 
             visited: MaskFrame = zeros((height, width), dtype=bool)
             img = results.orig_img
             fg = mog.apply(img)
-            visited[:] = False
             if results.boxes is not None:
                 boxes = results.boxes
                 for i in range(len(boxes)):
@@ -147,8 +146,8 @@ def generate_in_thread[T](generator: Generator[T], maxsize: int = 100) -> Genera
 
 
 def apply_red_mask(img: ndarray, mask: MaskFrame):
-    img[mask.astype(bool)] = multiply(img[mask.astype(bool)], 1.0 - ALPHA, casting="unsafe")
-    img[mask.astype(bool)] = add(img[mask.astype(bool)], [0, 0, int(255 * ALPHA)])
+    region = multiply(img[mask], 1.0 - ALPHA, casting="unsafe")
+    img[mask] = add(region, [0, 0, int(255 * ALPHA)])
 
 
 def main(input_video: Path, output_video: Path):
@@ -187,8 +186,7 @@ def main(input_video: Path, output_video: Path):
 
     for frame_idx, (img, mask) in enumerate(presence_frames(input_video, model)):
         visited |= mask
-        mask = visited.astype(bool)
-        apply_red_mask(img, mask)
+        apply_red_mask(img, visited)
 
         writer.write(img)
 

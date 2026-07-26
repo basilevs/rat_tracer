@@ -36,7 +36,7 @@ class CoverageHistory(Synchronized):
         contiguous blobs collapse into repeated bytes that DEFLATE encodes
         cheaply. The frame shape is taken from the history dimensions on decode.
         """
-        packed = packbits(frame.astype(bool))
+        packed = packbits(frame)
         return zlib.compress(packed.tobytes(), level=9)
 
     def _decode(self, blob: bytes) -> MaskFrame:
@@ -44,7 +44,7 @@ class CoverageHistory(Synchronized):
         assert self.height is not None and self.width is not None
         packed = frombuffer(zlib.decompress(blob), dtype=uint8)
         bits = unpackbits(packed, count=self.height * self.width)
-        return bits.reshape(self.height, self.width).astype(bool)
+        return bits.view(bool_).reshape(self.height, self.width)
 
     def append(self, presence_frame: MaskFrame) -> MaskFrame:
         # TODO: release the read lock while doing computation
