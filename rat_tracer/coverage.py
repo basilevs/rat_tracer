@@ -1,26 +1,32 @@
 import zlib
+from threading import Lock
 
 from numpy import bool_, dtype, frombuffer, ndarray, packbits, uint8, unpackbits, zeros
-
-from rat_tracer.lib import Synchronized
 
 type MaskFrame = ndarray[tuple[int, int], dtype[bool_]]
 
 
-class CoverageHistory(Synchronized):
+class CoverageHistory:
     """Stores the history of visited pixels across frames."""
 
     def __init__(self):
+        # A single lock guards the shared state (``visited``, dimensions and the
+        # ``history`` list), but it is only held for the cheap in-memory
+        # mutations. The expensive (de)compression steps run without the lock
+        # held, so readers can decode past frames while a writer is encoding a
+        # new one, and vice versa.
+        self._lock = Lock()
         self.width: int | None = None
         self.height: int | None = None
         self.visited = None
         self.history: list[bytes] = []
 
     def clear(self):
-        self.width = None
-        self.height = None
-        self.visited = None
-        self.history.clear()
+        with self._lock:
+            self.width = None
+            self.height = None
+            self.visited = None
+            self.history.clear()
 
     def _ensure_initialized(self, width: int, height: int):
         if self.width != width or self.height != height:
@@ -39,25 +45,34 @@ class CoverageHistory(Synchronized):
         packed = packbits(frame)
         return zlib.compress(packed.tobytes(), level=9)
 
-    def _decode(self, blob: bytes) -> MaskFrame:
+    def _decode(self, blob: bytes, height: int, width: int) -> MaskFrame:
         """Inverse of :meth:`_encode`."""
-        assert self.height is not None and self.width is not None
         packed = frombuffer(zlib.decompress(blob), dtype=uint8)
-        bits = unpackbits(packed, count=self.height * self.width)
-        return bits.view(bool_).reshape(self.height, self.width)
+        bits = unpackbits(packed, count=height * width)
+        return bits.view(bool_).reshape(height, width)
 
     def append(self, presence_frame: MaskFrame) -> MaskFrame:
-        # TODO: release the read lock while doing computation
         height, width = presence_frame.shape[:2]
-        self._ensure_initialized(width, height)
-        self.visited |= presence_frame.astype(bool)
-        self.history.append(self._encode(self.visited))
-        return self.visited
+        with self._lock:
+            self._ensure_initialized(width, height)
+            self.visited |= presence_frame.astype(bool)
+            snapshot = self.visited.copy()
+        # Compress outside the lock so readers can access the history meanwhile.
+        blob = self._encode(snapshot)
+        with self._lock:
+            self.history.append(blob)
+        return snapshot
 
     def __getitem__(self, frame_idx: int) -> MaskFrame:
-        if frame_idx < 0 or frame_idx >= len(self.history):
-            raise IndexError("Frame index out of range")
-        return self._decode(self.history[frame_idx])
+        with self._lock:
+            if frame_idx < 0 or frame_idx >= len(self.history):
+                raise IndexError("Frame index out of range")
+            assert self.height is not None and self.width is not None
+            blob = self.history[frame_idx]
+            height, width = self.height, self.width
+        # Decompress outside the lock so a concurrent writer can keep encoding.
+        return self._decode(blob, height, width)
 
     def __len__(self) -> int:
-        return len(self.history)
+        with self._lock:
+            return len(self.history)
