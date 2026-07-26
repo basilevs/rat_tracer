@@ -21,7 +21,7 @@ from ultralytics import YOLO
 
 from rat_tracer.coverage import CoverageHistory
 from rat_tracer.paint import apply_red_mask, presence_frames
-from rat_tracer.lib import best_model_path
+from rat_tracer.lib import model_path
 
 
 T = TypeVar('T')
@@ -44,7 +44,7 @@ class CoverageComputer(QThread):
     def run(self):
         start = time()
         logger.info("Processing video: %s", self._video)
-        for _, mask in presence_frames(self._video, model=YOLO(best_model_path)):
+        for _, mask in presence_frames(self._video, model=YOLO(model_path())):
             self._history.append(mask)
             if self.isInterruptionRequested():
                 return

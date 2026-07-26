@@ -7,7 +7,7 @@ from numpy import frombuffer, uint8
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from rat_tracer.lib import Box, Point, Predictions, best_model_path, nms_callback
+from rat_tracer.lib import Box, Point, Predictions, model_path, nms_callback
 
 LABYRINTH_CLASS = 2
 
@@ -95,7 +95,7 @@ def track_set(results: Results) -> set[float]:
     return found
 
 def main(input_video: Path):
-    model = YOLO(best_model_path)
+    model = YOLO(model_path())
     model.add_callback("on_predict_postprocess_end", nms_callback)
 
     stream = model.track(

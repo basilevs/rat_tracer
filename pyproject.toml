@@ -8,6 +8,7 @@ version = "0.0.1"
 dependencies = [
   "ultralytics>=8.4.0",
   "PySide6",
+  "huggingface-hub",
 ]
 requires-python = ">=3.13"
 authors = [
@@ -25,6 +26,14 @@ classifiers = [
 
 [tool.hatch.build.targets.wheel]
 packages=["rat_tracer"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+markers = [
+  "network: test requires network access to Hugging Face",
+]
 
 [project.urls]
 Homepage = "https://github.com/basilevs/rat_tracer"

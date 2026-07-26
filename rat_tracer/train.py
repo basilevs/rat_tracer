@@ -7,7 +7,7 @@ from psutil import Process
 from wakepy import keep
 from ultralytics import YOLO
 
-from rat_tracer.lib import best_model_path
+from rat_tracer.lib import model_path
 
 
 # Callback: print resident set size (RSS) memory
@@ -31,7 +31,7 @@ def main():
     if "--new" in argv:
         resume = False
         if "--pre" in argv:
-            weights = best_model_path
+            weights = model_path()
             conf['patience'] = 20
             conf['freeze'] = 200
     else:

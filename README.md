@@ -17,7 +17,9 @@ pip install -e rat_tracer
 
 # Training workflow
 - Film your rat in a top-down view (referenced below as `video.mp4`)
-- Download a pre-trained model and configure it in `lib.py/best_model_path`
+- The published model is downloaded automatically from Hugging Face on first use;
+  no manual model configuration is needed. Set the `RAT_TRACER_MODEL` environment
+  variable to a local `.pt` path to override it (e.g. when training or publishing).
 - Run `track.py video.mp4` (supports other popular video formats, but not everything)
 - Inspect images from runs/detect/track*/track_loss
 - Delete images with correct annotations
@@ -25,8 +27,9 @@ pip install -e rat_tracer
   - track_to_frames.py video.mp4 runs/detect/track*/track_loss
 - Annotate raw frames runs/detect/track*/images/*.png in YOLO format using your prefered labeler
 - `split.py uns/detect/track*/images data` (`data` is a path to `data` directory in rat_tracer repository)
-- `train.py --new --pre`
-- update `lib.py/best_model_path` with the resulting over-trained model
+- `RAT_TRACER_MODEL=path/to/last.pt train.py --new --pre`
+- publish the resulting over-trained model by uploading it as `rat_tracer.pt`:
+  `hf upload basilevs83/rat-tracer runs/detect/track*/weights/last.pt rat_tracer.pt`
 - Repeat the cycle with other videos, remove `--pre` argument once dataset is larger that 500 images, you may have to edit `train.py` to use a freshly downloaded YOLO pretrained model
 
 # Tracking workflow

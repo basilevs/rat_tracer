@@ -25,7 +25,7 @@ from cv2.typing import MatLike
 from ultralytics import YOLO
 from ultralytics.engine.results import Results, Boxes
 
-from rat_tracer.lib import Annotation, Point, Box, Prediction, annotation_to_box, box_error, box_iou, dashed_rectangle, nms_callback, pop_minimum, best_model_path, truth_for_results
+from rat_tracer.lib import Annotation, Point, Box, Prediction, annotation_to_box, box_error, box_iou, dashed_rectangle, nms_callback, pop_minimum, model_path, truth_for_results
 
 
 def pop_nearest(boxes: list[Prediction], to_find: Box) -> Prediction | None:
@@ -224,7 +224,7 @@ def main() -> None:
     # images = [Path('data/images/Val/2026-01-15-2_002532.png')]
     # images = [Path('data/images/Train/2026-01-27_000006.jpeg')]
 
-    model = YOLO(best_model_path)
+    model = YOLO(model_path())
     model.add_callback("on_predict_postprocess_end", nms_callback)
 
     cls = -1  # all classes

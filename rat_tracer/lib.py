@@ -5,6 +5,7 @@ from itertools import islice
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import wraps
+from os import environ
 from pathlib import Path
 from sys import stderr
 from threading import RLock
@@ -14,12 +15,31 @@ from numpy import ndarray
 
 from cv2 import rectangle, putText, FONT_HERSHEY_SIMPLEX, LINE_AA, line
 
+from huggingface_hub import hf_hub_download
+
 from torch import Tensor, float32, tensor
 from ultralytics.engine.results import Results, Boxes
 from ultralytics.engine.predictor import BasePredictor
 
-best_model_path=Path('runs/detect/train38/weights/last.pt')
-#best_model_path=Path('input/yolo26n.pt')
+MODEL_REPO_ID = 'basilevs83/rat-tracer'
+MODEL_FILENAME = 'rat_tracer.pt'
+MODEL_ENV_VAR = 'RAT_TRACER_MODEL'
+
+def model_path() -> Path:
+    """Resolve the detection model weights.
+
+    Honors the RAT_TRACER_MODEL environment variable as a local override (used
+    for training, publishing and development). Otherwise the published model is
+    downloaded from Hugging Face and cached, re-fetching only when it changes.
+    Falls back to a cached copy when offline.
+    """
+    override = environ.get(MODEL_ENV_VAR)
+    if override:
+        return Path(override)
+    try:
+        return Path(hf_hub_download(repo_id=MODEL_REPO_ID, filename=MODEL_FILENAME))
+    except Exception:  # pylint: disable=broad-except
+        return Path(hf_hub_download(repo_id=MODEL_REPO_ID, filename=MODEL_FILENAME, local_files_only=True))
 
 @dataclass
 class Point:

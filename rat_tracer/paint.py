@@ -30,7 +30,7 @@ from cv2 import (
 )
 
 from ultralytics import YOLO
-from rat_tracer.lib import best_model_path, chunk
+from rat_tracer.lib import model_path, chunk
 
 RAT_CLASS = 0
 ALPHA = 0.35
@@ -153,7 +153,7 @@ def apply_red_mask(img: ndarray, mask: MaskFrame):
     img[mask.astype(bool)] = add(img[mask.astype(bool)], [0,0,int(255*ALPHA)])
 
 def main(input_video: Path, output_video: Path):
-    model = YOLO(best_model_path)
+    model = YOLO(model_path())
     cap = VideoCapture(str(input_video))
     try:
         width = int(cap.get(CAP_PROP_FRAME_WIDTH))
