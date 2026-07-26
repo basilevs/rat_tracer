@@ -151,11 +151,13 @@ class VideoMasker(QObject):
             # Coalesce: overwrite the pending value; schedule a single render if not already queued
             self._pending_position = new_value
             if not self._do_render_pending:
+                self._do_render_pending = True
                 QTimer.singleShot(0, self._do_render)
 
     @Slot()
     def _do_render(self):
         try: 
+            frame = QVideoFrame()
             while self._position != self._pending_position:
                 new_value = self._pending_position
                 self._position = new_value
@@ -167,6 +169,9 @@ class VideoMasker(QObject):
                 logger.debug("Sliding to frame %d", frame_idx)
                 capture.set(CAP_PROP_POS_FRAMES, frame_idx)
                 ok, img = capture.read()
+                if new_value != self._pending_position:
+                    logger.debug("Position changed during render; skipping frame %d", frame_idx)
+                    continue
                 if not ok:
                     logger.warning("Cannot read frame %d", frame_idx)
                     return
@@ -175,8 +180,8 @@ class VideoMasker(QObject):
                 else:
                     apply_red_mask(img, self._history[frame_idx])
                 frame = bgr_array_to_qvideoframe(img)
-                self._frame_count += 1
-                self._video_sink.setVideoFrame(frame)
+            self._frame_count += 1
+            self._video_sink.setVideoFrame(frame)
             self.position_changed.emit(self._position)
         finally:
             self._do_render_pending = False
