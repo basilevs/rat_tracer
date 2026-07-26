@@ -1,7 +1,7 @@
 import pickle
 import tempfile
 import zlib
-from logging import getLogger
+from logging import DEBUG, getLogger
 from pathlib import Path
 from time import perf_counter
 
@@ -10,6 +10,7 @@ from rat_tracer.coverage import CoverageHistory
 _CHUNK = 1 << 20  # 1 MiB read chunks for hashing
 
 logger = getLogger(__name__)
+logger.setLevel(DEBUG)
 
 
 def video_key(path: Path) -> str:
@@ -27,7 +28,7 @@ def video_key(path: Path) -> str:
     elapsed = perf_counter() - start
     logger.debug(
         "Hashed %s (%.1f MiB) in %.3fs -> key %s (%s)",
-        path.name,
+        path,
         size / (1 << 20),
         elapsed,
         key,
