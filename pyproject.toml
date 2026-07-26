@@ -95,6 +95,9 @@ module = [
   "lap.*",
   "huggingface_hub.*",
   "wakepy.*",
+  "imageio.*",
+  "imageio_ffmpeg.*",
+  "psutil.*",
 ]
 ignore_missing_imports = true
 

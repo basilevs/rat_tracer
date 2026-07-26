@@ -5,7 +5,7 @@ from platform import system
 from queue import Empty, Queue, ShutDown
 from threading import Thread
 
-from cv2 import (
+from cv2 import (  # type: ignore[attr-defined]
     CAP_PROP_FPS,
     CAP_PROP_FRAME_HEIGHT,
     CAP_PROP_FRAME_WIDTH,

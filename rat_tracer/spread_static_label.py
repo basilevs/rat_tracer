@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from os import SEEK_END
 from pathlib import Path
@@ -33,7 +33,7 @@ def equal(a: list[float], b: list[float]):
     return result
 
 
-def spread_annotations(annotations: list[Annotation], target_cls: int, files: Iterator[Path]):
+def spread_annotations(annotations: list[Annotation], target_cls: int, files: Iterable[Path]):
     annotations = list(annotations)
     original_lab_coords = labyrinth_coordinates(annotations)
     annotations_to_add = [a for a in list(annotations) if a.cls == target_cls]

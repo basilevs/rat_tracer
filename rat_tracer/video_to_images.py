@@ -1,4 +1,4 @@
-from collections.abc import Iterator
+from collections.abc import Iterable
 from pathlib import Path
 from sys import argv
 
@@ -14,11 +14,11 @@ def _main():
     extract_frames(VIDEO, FRAMES, OUT_DIR)
 
 
-def extract_frames(video: Path, frames: Iterator[int], output_directory: Path):
+def extract_frames(video: Path, frames: Iterable[int], output_directory: Path):
     output_directory.mkdir(exist_ok=True)
 
     filename_prefix = video.with_suffix("").name
-    cap = VideoCapture(video)
+    cap = VideoCapture(str(video))
 
     for frame in frames:
         cap.set(CAP_PROP_POS_FRAMES, frame)

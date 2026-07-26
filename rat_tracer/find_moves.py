@@ -3,7 +3,7 @@ Finds groups of annotations at the same position and prints a single representat
 Multiple instances are not supported (always printed)
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from sys import argv
 
@@ -24,7 +24,7 @@ def equal(a: list[float], b: list[float]):
     return result
 
 
-def find_moves(cls: int, label_files: Iterator[Path]) -> Iterator[Path]:
+def find_moves(cls: int, label_files: Iterable[Path]) -> Iterator[Path]:
     found: list[tuple[Path, list[float]]] = []
     for path in label_files:
         class_annotations = [a for a in read_annotations(path) if a.cls == cls]
@@ -39,9 +39,8 @@ def find_moves(cls: int, label_files: Iterator[Path]) -> Iterator[Path]:
 
 
 def main():
-    paths = Path(argv[2]).glob("*.txt")
+    paths: list[Path] = list(Path(argv[2]).glob("*.txt"))
     paths = [p for p in paths if not any(a.cls == 3 for a in read_annotations(p))]
-    paths = list(paths)
     paths.sort()
     paths = list(find_moves(int(argv[1]), paths))
     for p in paths:

@@ -10,7 +10,7 @@ root = Path("data")
 
 
 def main():
-    data: list[(Path, dict[int, Tensor])] = []
+    data: list[tuple[Path, dict[int, Tensor]]] = []
     for file in (root / "labels" / "Train").glob("*.txt"):
         parsed: dict[int, Tensor] = {}
         for line in file.read_text().split("\n"):
@@ -23,7 +23,7 @@ def main():
     while data:
         file, annotation = data.pop()
         for i in data:
-            product = 1.0
+            product: Tensor = tensor(1.0)
             class_ids = frozenset(annotation.keys()).union(i[1].keys())
             for k in class_ids:
                 try:
