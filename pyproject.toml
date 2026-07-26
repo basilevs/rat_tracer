@@ -70,3 +70,31 @@ ignore = [
   "E501",  # line length is handled by the formatter
 ]
 
+[tool.mypy]
+python_version = "3.13"
+files = ["rat_tracer", "tests"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+# The existing scripts are largely unannotated; enable annotation enforcement
+# incrementally per-module rather than mandating it repo-wide on day one.
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# Third-party libraries that ship no type information or only partial stubs.
+[[tool.mypy.overrides]]
+module = [
+  "cv2.*",
+  "torch.*",
+  "torchvision.*",
+  "ultralytics.*",
+  "PySide6.*",
+  "coremltools.*",
+  "lap.*",
+  "huggingface_hub.*",
+  "wakepy.*",
+]
+ignore_missing_imports = true
+
