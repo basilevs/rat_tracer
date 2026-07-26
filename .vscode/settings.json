@@ -2,5 +2,16 @@
     "python-envs.defaultEnvManager": "ms-python.python:venv",
     "files.watcherExclude": {
         "**/target/**": true
+    },
+    "pylint.enabled": false,
+    "ruff.enable": true,
+    "ruff.nativeServer": "on",
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        }
     }
 }
