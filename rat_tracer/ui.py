@@ -66,7 +66,8 @@ class BackgroundWorker(QThread):
 @QmlElement
 class VideoMasker(QObject):
     # 1. Define a signal to notify QML when the property changes
-    frameReady = Signal(QVideoFrame)
+    frame_ready = Signal(QVideoFrame)
+    position_changed = Signal(float)
 
 
     def __init__(self, parent=None):
@@ -99,6 +100,7 @@ class VideoMasker(QObject):
             self.position = float(len(self._history)-1) / self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
     @Slot()
     def reset(self):
+        logger.debug("Resetting VideoMasker")
         t = self._thread
         if t:
             t.frameReady.disconnect(self._threadConnection)
@@ -119,7 +121,7 @@ class VideoMasker(QObject):
         self._playing = value
         self._on_frame_ready()
 
-    @Property(float)
+    @Property(float, notify=position_changed)
     def position(self):
         return self._position
 
@@ -133,7 +135,7 @@ class VideoMasker(QObject):
             self.frameReady.emit(QVideoFrame())
             return
         new_value = int(new_value * capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        logger.info("Sliding to frame %d", new_value)
+        logger.debug("Sliding to frame %d", new_value)
         capture.set(CAP_PROP_POS_FRAMES, int(new_value))
         ok, img = capture.read()
         if not ok:
@@ -143,7 +145,7 @@ class VideoMasker(QObject):
         else:
             apply_red_mask(img, self._history[int(new_value)])
         frame = bgr_array_to_qvideoframe(img)
-        self.frameReady.emit(frame)
+        self.frame_ready.emit(frame)
 
 def bgr_array_to_qvideoframe(bgr_arr: np.ndarray) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""
@@ -214,7 +216,6 @@ if __name__ == "__main__":
 
     masker = root.findChild(VideoMasker)
     masker.video = str(video)
-
 
     app.aboutToQuit.connect(masker.reset)
 

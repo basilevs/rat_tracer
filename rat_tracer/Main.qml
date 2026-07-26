@@ -16,9 +16,8 @@ ApplicationWindow {
     property bool playing: true
     VideoMasker {
         id: "masker"
-        position: slider.position
         playing: page.playing
-        onFrameReady: videoOutput.setVideoFrame
+        onFrame_ready: videoOutput.setVideoFrame
     }
     ColumnLayout {
         spacing: 2
@@ -45,7 +44,8 @@ ApplicationWindow {
             id: "slider"
             Layout.fillWidth: true
             objectName: "slider_here"
-            
+            onMoved: () => masker.position = slider.value
+            //value: masker.position
         }
         Button {
             text: page.playing ? "Pause" : "Play"
