@@ -95,14 +95,19 @@ class VideoMasker(QObject):
             if cap:
                 self.position = float(len(self._history)-1) / self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
 
-    @Property(QQuickItem)
+    @Property(QObject)
     def video_output(self):
         return self._video_output
 
     @video_output.setter
-    def video_output(self, video_output: QQuickItem):
+    def video_output(self, video_output: QObject):
         self._video_output = video_output
-        self._video_sink = video_output.property("videoSink")
+        if isinstance(video_output, QVideoSink):
+            self._video_sink = video_output
+        else:
+            self._video_sink = video_output.findChild(QVideoSink)
+        if not self._video_sink:
+            raise ValueError("video_output must be a QVideoSink or contain one as a child")
         self._on_frame_ready()
 
     @Slot()
