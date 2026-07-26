@@ -3,12 +3,11 @@ from sys import argv, path, exit
 from pathlib import Path
 from time import time
 from typing import TypeVar
-
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 
 from signal import signal, SIGINT
 
-from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize
+from PySide6.QtCore import Property, QObject, QThread, Slot, Signal, QSize, QTimer, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, QmlElement
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -71,6 +70,9 @@ class VideoMasker(QObject):
         self._playing = True
         self._video_sink = QVideoSink()
         self._cap = None
+        self._frame_count = 0
+        self._pending_position = None
+        self._do_render_pending = False
 
     @Property(str)
     def video(self):
@@ -133,24 +135,39 @@ class VideoMasker(QObject):
     @position.setter
     def position(self, new_value: float):
         # Prevent infinite binding loops by only updating if the value actually changed
-        if self._position != new_value:
-            self._position = new_value
-        capture = self._cap
-        if not capture:
-            self._video_sink.setVideoFrame(QVideoFrame())
-            return
-        new_value = int(new_value * capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        logger.debug("Sliding to frame %d", new_value)
-        capture.set(CAP_PROP_POS_FRAMES, int(new_value))
-        ok, img = capture.read()
-        if not ok:
-            raise RuntimeError(f"Cannot read frame {new_value}")
-        if new_value < 0 or new_value >= len(self._history):
-            logger.debug("Frame index %d out of range", new_value)
-        else:
-            apply_red_mask(img, self._history[int(new_value)])
-        frame = bgr_array_to_qvideoframe(img)
-        self._video_sink.setVideoFrame(frame)
+        if self._pending_position != new_value:
+            # Coalesce: overwrite the pending value; schedule a single render if not already queued
+            self._pending_position = new_value
+            if not self._do_render_pending:
+                QTimer.singleShot(0, self._do_render)
+
+    @Slot()
+    def _do_render(self):
+        try: 
+            while self._position != self._pending_position:
+                new_value = self._pending_position
+                self._position = new_value
+                capture = self._cap
+                if not capture:
+                    self._video_sink.setVideoFrame(QVideoFrame())
+                    return
+                frame_idx = int(new_value * capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                logger.debug("Sliding to frame %d", frame_idx)
+                capture.set(CAP_PROP_POS_FRAMES, frame_idx)
+                ok, img = capture.read()
+                if not ok:
+                    logger.warning("Cannot read frame %d", frame_idx)
+                    return
+                if frame_idx < 0 or frame_idx >= len(self._history):
+                    logger.debug("Frame index %d out of range", frame_idx)
+                else:
+                    apply_red_mask(img, self._history[frame_idx])
+                frame = bgr_array_to_qvideoframe(img)
+                self._frame_count += 1
+                self._video_sink.setVideoFrame(frame)
+            self.position_changed.emit(self._position)
+        finally:
+            self._do_render_pending = False
 
 def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
     """Converts a BGR NumPy array to a PySide6 QVideoFrame."""

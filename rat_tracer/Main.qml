@@ -46,7 +46,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             objectName: "slider_here"
             onMoved: () => masker.position = slider.value
-            //value: masker.position
+            value: masker.position
         }
         Button {
             text: page.playing ? "Pause" : "Play"
