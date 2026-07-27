@@ -41,7 +41,7 @@ markers = [
   "network: test requires network access to Hugging Face",
 ]
 
-[project.gui-scripts]
+[project.scripts]
 rat-tracer = "rat_tracer.ui:main"
 
 [project.urls]
