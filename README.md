@@ -31,6 +31,8 @@ pip install git+https://github.com/basilevs/rat_tracer
 
 The painted track is never erased, so once a goal it painted over, you know to rewind back to find the exact moment it happens.
 
+[![Rat Tracer traversal evaluation workflow](https://img.youtube.com/vi/Ybt3lNtIi9M/0.jpg)](https://www.youtube.com/watch?v=Ybt3lNtIi9M)
+
 
 # Training workflow
 The project comes with a set of scripts to train custom object detection models for specific environments and subjects. This part is not user-friendly yet.
