@@ -8,9 +8,6 @@ Helps researcher to find key moments in labyrinth exploration experiment:
 # Demo
 [![Rat Tracer demo](https://img.youtube.com/vi/zyiqXmX0mmo/0.jpg)](https://www.youtube.com/watch?v=zyiqXmX0mmo)
 
-# Disclaimer
-This is a research project not meant for general consumption. It has no covenient interface.
-
 # Installation
 pip install git+https://github.com/basilevs/rat_tracer
 
