@@ -22,8 +22,8 @@ ApplicationWindow {
     }
     FileDialog {
         id: fileDialog
-        title: "Open video"
-        nameFilters: ["Video files (*.mp4 *.mov *.avi *.mkv)", "All files (*)"]
+        title: tr.open_video_title
+        nameFilters: [tr.video_files_filter, tr.all_files_filter]
         onAccepted: masker.openVideo(selectedFile)
     }
     ColumnLayout {
@@ -65,12 +65,12 @@ ApplicationWindow {
         }
         RowLayout {
             Button {
-                text: "Open…"
+                text: tr.open_button
                 Layout.alignment: Qt.AlignHCenter
                 onClicked: fileDialog.open()
             }
             Button {
-                text: page.playing ? "Pause" : "Play"
+                text: page.playing ? tr.pause_button : tr.play_button
                 Layout.alignment: Qt.AlignHCenter
                 onClicked: {
                     page.playing = !page.playing
@@ -83,7 +83,7 @@ ApplicationWindow {
             Button {
                 text: masker.time_text
                 ToolTip.visible: hovered
-                ToolTip.text: "Click to copy"
+                ToolTip.text: tr.click_to_copy
                 onClicked: {
                     clipboardHelper.text = masker.time_text
                     clipboardHelper.selectAll()

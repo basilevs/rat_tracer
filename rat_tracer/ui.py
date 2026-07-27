@@ -9,7 +9,17 @@ from typing import TypeVar
 import cv2
 from cv2 import CAP_PROP_POS_FRAMES, VideoCapture
 from cv2.typing import MatLike
-from PySide6.QtCore import Property, QObject, QSize, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    Property,
+    QLocale,
+    QObject,
+    QSize,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat, QVideoSink
 from PySide6.QtQml import QmlElement, QQmlApplicationEngine
@@ -21,6 +31,7 @@ from rat_tracer.coverage import CoverageHistory
 from rat_tracer.lib import model_path
 from rat_tracer.paint import apply_red_mask, presence_frames
 from rat_tracer.progress_cache import load_progress, save_progress, video_key
+from rat_tracer.translations import resolve_translations
 
 T = TypeVar("T")
 
@@ -262,13 +273,12 @@ def handleIntSignal(signum, frame):
 
 def main():
     basicConfig()
-    parser = argparse.ArgumentParser(description="Rat Tracer UI")
-    parser.add_argument(
-        "-v", "--video", type=Path, default=None, help="Video file to open on startup"
-    )
+    strings = resolve_translations(QLocale.system().name())
+    parser = argparse.ArgumentParser(description=strings["cli_description"])
+    parser.add_argument("-v", "--video", type=Path, default=None, help=strings["cli_video_help"])
     args, _ = parser.parse_known_args(argv[1:])
     if args.video is not None and not args.video.is_file():
-        parser.error(f"video file not found: {args.video}")
+        parser.error(strings["cli_video_not_found"].format(path=args.video))
 
     app = QGuiApplication(argv)
 
@@ -278,6 +288,7 @@ def main():
     engine = QQmlApplicationEngine()
     # VideoMasker is registered as the "MyBackend" QML module via @QmlElement,
     # so no import path is needed. Load Main.qml directly by absolute path.
+    engine.rootContext().setContextProperty("tr", strings)
     engine.load(Path(__file__).parent / "Main.qml")
 
     if not engine.rootObjects():
