@@ -41,15 +41,15 @@ markers = [
   "network: test requires network access to Hugging Face",
 ]
 
+[project.scripts]
+rat-tracer = "rat_tracer.ui:main"
+
 [project.urls]
 Homepage = "https://github.com/basilevs/rat_tracer"
 Documentation = "https://github.com/basilevs/rat_tracer"
 Repository = "https://github.com/basilevs/rat_tracer.git"
 "Bug Tracker" = "https://github.com/basilevs/rat_tracer/issues"
 Changelog = "https://github.com/basilevs/rat_tracer/commits/main/"
-
-[project.scripts]
-#where = "rat_tracer.where:main"
 
 [tool.ruff]
 target-version = "py313"
