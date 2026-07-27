@@ -31,10 +31,12 @@ pip install git+https://github.com/basilevs/rat_tracer
   - first visit of an area can be found by boxing it between moments where it has not yet been visited/highlighted and already has
   - complete exploration of a labirinth
 
-The painted track is never erased, so once it paints over the labyrinth goal, you know to rewind back to find the exact moment it happens.
+The painted track is never erased, so once a goal it painted over, you know to rewind back to find the exact moment it happens.
 
 
 # Training workflow
+The project comes with a set of scripts to train custom object detection models for specific environments and subjects. This part is not user-friendly yet.
+
 - Film your rat in a top-down view (referenced below as `video.mp4`)
 - The published model is downloaded automatically from Hugging Face on first use;
   no manual model configuration is needed. Set the `RAT_TRACER_MODEL` environment
@@ -50,5 +52,3 @@ The painted track is never erased, so once it paints over the labyrinth goal, yo
 - publish the resulting over-trained model by uploading it as `rat_tracer.pt`:
   `hf upload basilevs83/rat-tracer runs/detect/track*/weights/last.pt rat_tracer.pt`
 - Repeat the cycle with other videos, remove `--pre` argument once dataset is larger that 500 images, you may have to edit `train.py` to use a freshly downloaded YOLO pretrained model
-
-# Tracking workflow
