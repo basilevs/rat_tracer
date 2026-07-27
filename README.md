@@ -1,11 +1,9 @@
-Scripts to YOLO track a rat in a labyrinth.
+# Rat Tracer
+Trace a rat in a video recording of a labyrinth traversal and highlight visited areas.
 
 Helps researcher to find key moments in labyrinth exploration experiment:
 - goal reached
 - whole labyrinth is explored
-
-Top-down view
-Custom dataset
 
 # Disclaimer
 This is a research project not meant for general consumption. It has no covenient interface.
