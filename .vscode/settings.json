@@ -15,6 +15,10 @@
         }
     },
     "chat.tools.terminal.autoApprove": {
-        "make": true
+        "make": true,
+        "/^source \\.venv/bin/activate && make check$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
     }
 }
