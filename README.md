@@ -15,9 +15,13 @@ pip install git+https://github.com/basilevs/rat_tracer
 
 # Tracking workflow
 
+## Prerequisites
+- A video recording of an experiment from a static camera
+
+## Steps
 - Run:
 
-    rat-tracer.exe
+    rat_tracer[.exe]
 
 - Click "Open..."
 - Select a video recording of an experiment
