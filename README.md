@@ -6,14 +6,29 @@ Helps researcher to find key moments in labyrinth exploration experiment:
 
 Top-down view
 Custom dataset
-Experiment - does not have an inteface
 
 # Disclaimer
 This is a research project not meant for general consumption. It has no covenient interface.
 
 # Installation
-git clone https://github.com/basilevs/rat_tracer.git  
-pip install -e rat_tracer
+pip install git+https://github.com/basilevs/rat_tracer
+
+# Tracking workflow
+
+- Run:
+
+    rat-tracer.exe
+
+- Click "Open..."
+- Select a video recording of an experiment
+- Track subject's progress visually by watching the hightlighted visited area, or
+- "Pause" monitoring to save CPU cycles
+- When paused, seek around the already processed part of the video to locate key moments:
+  - first visit of an area can be found by boxing it between moments where it has not yet been visited/highlighted and already has
+  - complete exploration of a labirinth
+
+The painted track is never erased, so once it paints over the labyrinth goal, you know to rewind back to find the exact moment it happens.
+
 
 # Training workflow
 - Film your rat in a top-down view (referenced below as `video.mp4`)
@@ -33,9 +48,3 @@ pip install -e rat_tracer
 - Repeat the cycle with other videos, remove `--pre` argument once dataset is larger that 500 images, you may have to edit `train.py` to use a freshly downloaded YOLO pretrained model
 
 # Tracking workflow
-Run:
-
-    paint.py video.mp4 output.mp4
-
-To highlight the ground covered by a rat in an experiment. Open output.mp4 in a video viewer, use quick rewind function to evaluate the experiment.
-The painted track is never erased, so once it paints the labyrinth goal, you know to rewind back to find the exact moment it happens.
