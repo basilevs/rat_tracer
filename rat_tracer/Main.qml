@@ -91,6 +91,17 @@ ApplicationWindow {
                 }
             }
         }
+        Button {
+            text: masker.video || tr.no_file_open
+            Layout.fillWidth: true
+            ToolTip.visible: hovered
+            ToolTip.text: tr.click_to_copy
+            onClicked: {
+                clipboardHelper.text = masker.video
+                clipboardHelper.selectAll()
+                clipboardHelper.copy()
+            }
+        }
     }
 
 }

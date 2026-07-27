@@ -77,6 +77,7 @@ class CoverageComputer(QThread):
 class VideoMasker(QObject):
     # 1. Define a signal to notify QML when the property changes
     position_changed = Signal(float)
+    video_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -102,6 +103,7 @@ class VideoMasker(QObject):
         if not new_video:
             return
         self._video = Path(new_video)
+        self.video_changed.emit(str(self._video))
         self._cap = VideoCapture(str(self._video))
         self._total_frame_count = self._cap.get(cv2.CAP_PROP_FRAME_COUNT)
         t = CoverageComputer(self._history, self._video)
@@ -109,7 +111,7 @@ class VideoMasker(QObject):
         self._thread_connection = t.frameReady.connect(self._on_frame_ready)
         self._thread.start()
 
-    video = Property(str, _get_video, _set_video)
+    video = Property(str, _get_video, _set_video, notify=video_changed)
 
     @Slot(QUrl)
     def openVideo(self, url: QUrl) -> None:
