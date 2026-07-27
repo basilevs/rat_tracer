@@ -42,7 +42,7 @@ markers = [
 ]
 
 [project.scripts]
-rat-tracer = "rat_tracer.ui:main"
+rat_tracer = "rat_tracer.ui:main"
 
 [project.urls]
 Homepage = "https://github.com/basilevs/rat_tracer"
