@@ -112,7 +112,7 @@ class VideoMasker(QObject):
         t = CoverageComputer(self._history, self._video)
         self._thread = t
         self._thread_connection = t.frameReady.connect(self._on_frame_ready)
-        self._thread.start()
+        t.start()
 
     video = Property(str, _get_video, _set_video, notify=video_changed)
 
@@ -126,6 +126,8 @@ class VideoMasker(QObject):
     @Slot()
     def _on_frame_ready(self):
         total = self._total_frame_count
+        if total == 0:
+            return
         last_frame = len(self._history) - 1
         processed_position = float(len(self._history) - 1) / total
         logger.debug(
@@ -135,8 +137,6 @@ class VideoMasker(QObject):
             self._playing,
             self._mask_rendered,
         )
-        if total == 0:
-            return
         if self._playing:
             cap = self._cap
             if cap:
