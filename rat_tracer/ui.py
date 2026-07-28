@@ -189,9 +189,10 @@ class VideoMasker(QObject):
         if self._pending_position != new_value:
             # Coalesce: overwrite the pending value; schedule a single render if not already queued
             self._pending_position = new_value
+            logger.debug("Position requested %.3f", new_value)
             if not self._do_render_pending:
                 self._do_render_pending = True
-                QTimer.singleShot(0, self._do_render)
+                QTimer.singleShot(1, self._do_render)
 
     position = Property(float, _get_position, _set_position, notify=position_changed)
 
