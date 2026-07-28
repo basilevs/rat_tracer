@@ -19,6 +19,10 @@
         "/^source \\.venv/bin/activate && make check$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^source ${workspaceFolder}/\\.venv/bin/activate && cd ${workspaceFolder} && make check 2>&1 \\| tail -40$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
