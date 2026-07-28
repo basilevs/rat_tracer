@@ -60,7 +60,10 @@ ApplicationWindow {
             id: "slider"
             Layout.fillWidth: true
             objectName: "slider_here"
-            onMoved: () => masker.position = slider.value
+            onMoved: {
+                masker.position = slider.value;
+                page.playing = false;
+            }
             value: masker.position
         }
         RowLayout {

@@ -1,5 +1,5 @@
 import argparse
-from logging import DEBUG, INFO, basicConfig, getLogger
+from logging import DEBUG, basicConfig, getLogger
 from pathlib import Path
 from signal import SIGINT, signal
 from sys import argv, exit
@@ -37,7 +37,7 @@ T = TypeVar("T")
 
 
 logger = getLogger(__name__)
-logger.setLevel(INFO)
+logger.setLevel(DEBUG)
 
 QML_IMPORT_NAME = "MyBackend"
 QML_IMPORT_MAJOR_VERSION = 1
@@ -69,6 +69,8 @@ class CoverageComputer(QThread):
                 save_progress(self._history, self._key)
                 return
             self.frameReady.emit()
+        else:
+            self.frameReady.emit()
         save_progress(self._history, self._key)
         logger.info("Finished processing video: %s in %.2f seconds", self._video, time() - start)
 
@@ -94,6 +96,7 @@ class VideoMasker(QObject):
         self._frame_count = 0
         self._pending_position = None
         self._do_render_pending = False
+        self._mask_rendered = False
 
     def _get_video(self) -> str:
         return str(self._video) if self._video else ""
@@ -122,11 +125,26 @@ class VideoMasker(QObject):
 
     @Slot()
     def _on_frame_ready(self):
+        total = self._total_frame_count
+        last_frame = len(self._history) - 1
+        processed_position = float(len(self._history) - 1) / total
+        logger.debug(
+            "Frame ready: %d/%d, playing: %s, mask_rendered: %s",
+            last_frame,
+            total,
+            self._playing,
+            self._mask_rendered,
+        )
+        if total == 0:
+            return
         if self._playing:
             cap = self._cap
             if cap:
                 # PySide Property setter
-                self.position = float(len(self._history) - 1) / self._total_frame_count  # type: ignore[assignment]
+                self.position = processed_position  # type: ignore[assignment]
+        else:
+            if not self._mask_rendered and self.position < processed_position:
+                self._schedule_render()
 
     def _get_video_output(self) -> QObject:
         return self._video_output  # type: ignore[return-value]  # None until QML binds it
@@ -188,44 +206,61 @@ class VideoMasker(QObject):
             # Coalesce: overwrite the pending value; schedule a single render if not already queued
             self._pending_position = new_value
             logger.debug("Position requested %.3f", new_value)
-            if not self._do_render_pending:
-                self._do_render_pending = True
-                QTimer.singleShot(1, self._do_render)
+            self._schedule_render()
 
     position = Property(float, _get_position, _set_position, notify=position_changed)
 
+    def _schedule_render(self):
+        logger.debug("Scheduling render for position %.3f", self._pending_position)
+        if not self._do_render_pending:
+            self._do_render_pending = True
+            QTimer.singleShot(1, self._rerender_if_needed)
+
     @Slot()
-    def _do_render(self):
+    def _rerender_if_needed(self):
         try:
-            frame = QVideoFrame()
-            while self._position != self._pending_position:
-                new_value = self._pending_position
-                assert new_value is not None
-                self._position = new_value
-                capture = self._cap
-                if not capture:
-                    self._video_sink.setVideoFrame(QVideoFrame())
-                    return
-                frame_idx = int(new_value * self._total_frame_count)
-                logger.debug("Sliding to frame %d", frame_idx)
-                capture.set(CAP_PROP_POS_FRAMES, frame_idx)
-                ok, img = capture.read()
-                if new_value != self._pending_position:
-                    logger.debug("Position changed during render; skipping frame %d", frame_idx)
-                    continue
-                if not ok:
-                    logger.warning("Cannot read frame %d", frame_idx)
-                    return
-                if frame_idx < 0 or frame_idx >= len(self._history):
-                    logger.debug("Frame index %d out of range", frame_idx)
-                else:
-                    apply_red_mask(img, self._history[frame_idx])
-                frame = bgr_array_to_qvideoframe(img)
-            self._frame_count += 1
+            if self._position == self._pending_position and (
+                self._mask_rendered
+                or not self._history.contains(self._position_to_frame_index(self._position))
+            ):
+                return
+            new_value = self._pending_position
+            assert new_value is not None
+            self._position = new_value
+            frame = self._produce_frame(new_value)
             self._video_sink.setVideoFrame(frame)
+
             self.position_changed.emit(self._position)
         finally:
             self._do_render_pending = False
+
+    def _produce_frame(self, position: float):
+        frame = QVideoFrame()
+        logger.debug("Rendering frame for position %.3f", position)
+        capture = self._cap
+        if not capture:
+            logger.warning("No video capture available for rendering")
+            self._video_sink.setVideoFrame(QVideoFrame())
+            return
+        frame_idx = self._position_to_frame_index(position)
+        logger.debug("Sliding to frame %d", frame_idx)
+        capture.set(CAP_PROP_POS_FRAMES, frame_idx)
+        ok, img = capture.read()
+        if not ok:
+            logger.warning("Cannot read frame %d", frame_idx)
+            return
+        self._mask_rendered = False
+        if frame_idx < 0 or frame_idx >= len(self._history):
+            logger.debug("Frame index %d is not processed yet", frame_idx)
+        else:
+            apply_red_mask(img, self._history[frame_idx])
+            self._mask_rendered = True
+        frame = bgr_array_to_qvideoframe(img)
+        self._frame_count += 1
+        return frame
+
+    def _position_to_frame_index(self, position: float) -> int:
+        return int(position * self._total_frame_count)
 
 
 def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:

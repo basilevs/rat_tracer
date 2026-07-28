@@ -231,6 +231,10 @@ class CoverageHistory:
             return slot.copy()
         return self._decode(slot, height, width)
 
+    def contains(self, frame_idx: int) -> bool:
+        with self._lock:
+            return 0 <= frame_idx < len(self.history)
+
     def __len__(self) -> int:
         with self._lock:
             return len(self.history)
