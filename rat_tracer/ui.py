@@ -175,7 +175,7 @@ class VideoMasker(QObject):
         if not cap:
             return "00:00:00"
         fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
-        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 1.0
+        total_frames = self._total_frame_count or 1.0
         elapsed_seconds = int(self._position * total_frames / fps)
         hours, rem = divmod(elapsed_seconds, 3600)
         minutes, seconds = divmod(rem, 60)
@@ -208,7 +208,7 @@ class VideoMasker(QObject):
                 if not capture:
                     self._video_sink.setVideoFrame(QVideoFrame())
                     return
-                frame_idx = int(new_value * capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                frame_idx = int(new_value * self._total_frame_count)
                 logger.debug("Sliding to frame %d", frame_idx)
                 capture.set(CAP_PROP_POS_FRAMES, frame_idx)
                 ok, img = capture.read()
