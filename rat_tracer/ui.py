@@ -174,9 +174,7 @@ class VideoMasker(QObject):
         cap = self._cap
         if not cap:
             return "00:00:00"
-        fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
-        total_frames = self._total_frame_count or 1.0
-        elapsed_seconds = int(self._position * total_frames / fps)
+        elapsed_seconds = int(cap.get(cv2.CAP_PROP_POS_MSEC) / 1000)
         hours, rem = divmod(elapsed_seconds, 3600)
         minutes, seconds = divmod(rem, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
