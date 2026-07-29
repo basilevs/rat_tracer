@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-PYTHON ?= python3
+PYTHON ?= $(shell test -x .venv/bin/python && echo .venv/bin/python || echo python3)
 
 .PHONY: install-dev  ## Install the package with development tooling
 install-dev:
