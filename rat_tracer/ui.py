@@ -39,6 +39,9 @@ T = TypeVar("T")
 logger = getLogger(__name__)
 logger.setLevel(DEBUG)
 
+masker_logger = logger.getChild("VideoMasker")
+masker_logger.setLevel(DEBUG)
+
 QML_IMPORT_NAME = "MyBackend"
 QML_IMPORT_MAJOR_VERSION = 1
 
@@ -97,11 +100,18 @@ class VideoMasker(QObject):
         self._pending_position = None
         self._do_render_pending = False
         self._mask_rendered = False
+        masker_logger.debug("__init__: VideoMasker initialized")
+
+    def _emit_frame(self, frame: QVideoFrame) -> None:
+        masker_logger.debug("_emit_frame: emitting frame (empty=%s)", not frame.isValid())
+        self._video_sink.setVideoFrame(frame)
 
     def _get_video(self) -> str:
+        masker_logger.debug("_get_video: %s", self._video)
         return str(self._video) if self._video else ""
 
     def _set_video(self, new_video: str) -> None:
+        masker_logger.debug("_set_video: %s", new_video)
         self.reset()
         if not new_video:
             return
@@ -119,6 +129,7 @@ class VideoMasker(QObject):
     @Slot(QUrl)
     def openVideo(self, url: QUrl) -> None:
         """Load a video from a QML file URL (from a file dialog or drag-and-drop)."""
+        masker_logger.debug("openVideo: %s", url)
         local_path = url.toLocalFile()
         if local_path:
             self.video = local_path  # type: ignore[assignment]  # PySide Property setter
@@ -127,10 +138,11 @@ class VideoMasker(QObject):
     def _on_frame_ready(self):
         total = self._total_frame_count
         if total == 0:
+            masker_logger.debug("_on_frame_ready: no frames yet (total=0)")
             return
         last_frame = len(self._history) - 1
         processed_position = float(len(self._history) - 1) / total
-        logger.debug(
+        masker_logger.debug(
             "Frame ready: %d/%d, playing: %s, mask_rendered: %s",
             last_frame,
             total,
@@ -147,9 +159,11 @@ class VideoMasker(QObject):
                 self._schedule_render()
 
     def _get_video_output(self) -> QObject:
+        masker_logger.debug("_get_video_output: %s", self._video_output)
         return self._video_output  # type: ignore[return-value]  # None until QML binds it
 
     def _set_video_output(self, video_output: QObject) -> None:
+        masker_logger.debug("_set_video_output: %s", video_output)
         self._video_output = video_output
         if isinstance(video_output, QVideoSink):
             self._video_sink = video_output
@@ -164,7 +178,7 @@ class VideoMasker(QObject):
 
     @Slot()
     def reset(self):
-        logger.debug("Resetting VideoMasker")
+        masker_logger.debug("reset: resetting VideoMasker")
         t = self._thread
         if t:
             t.frameReady.disconnect(self._thread_connection)
@@ -176,12 +190,14 @@ class VideoMasker(QObject):
         self._position = 0.0
         self._cap = None
         self._total_frame_count = 0.0
-        self._video_sink.setVideoFrame(QVideoFrame())
+        self._emit_frame(QVideoFrame())
 
     def _get_playing(self) -> bool:
+        masker_logger.debug("_get_playing: %s", self._playing)
         return self._playing
 
     def _set_playing(self, value: bool) -> None:
+        masker_logger.debug("_set_playing: %s", value)
         self._playing = value
         self._on_frame_ready()
 
@@ -189,6 +205,7 @@ class VideoMasker(QObject):
 
     @Property(str, notify=position_changed)
     def time_text(self):
+        masker_logger.debug("time_text")
         cap = self._cap
         if not cap:
             return "00:00:00"
@@ -198,37 +215,46 @@ class VideoMasker(QObject):
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def _get_position(self) -> float:
+        masker_logger.debug("_get_position: %.3f", self._position)
         return self._position
 
     def _set_position(self, new_value: float) -> None:
+        masker_logger.debug("_set_position: %.3f", new_value)
         # Prevent infinite binding loops by only updating if the value actually changed
         if self._pending_position != new_value:
             # Coalesce: overwrite the pending value; schedule a single render if not already queued
             self._pending_position = new_value
-            logger.debug("Position requested %.3f", new_value)
+            masker_logger.debug("Position requested %.3f", new_value)
             self._schedule_render()
 
     position = Property(float, _get_position, _set_position, notify=position_changed)
 
     def _schedule_render(self):
-        logger.debug("Scheduling render for position %.3f", self._pending_position)
+        masker_logger.debug("_schedule_render: position %.3f", self._pending_position)
         if not self._do_render_pending:
             self._do_render_pending = True
             QTimer.singleShot(1, self._rerender_if_needed)
 
     @Slot()
     def _rerender_if_needed(self):
+        masker_logger.debug(
+            "_rerender_if_needed: position=%.3f pending=%s mask_rendered=%s",
+            self._position,
+            self._pending_position,
+            self._mask_rendered,
+        )
         try:
             if self._position == self._pending_position and (
                 self._mask_rendered
                 or not self._history.contains(self._position_to_frame_index(self._position))
             ):
+                masker_logger.debug("_rerender_if_needed: nothing to render")
                 return
             new_value = self._pending_position
             assert new_value is not None
             self._position = new_value
             frame = self._produce_frame(new_value)
-            self._video_sink.setVideoFrame(frame)
+            self._emit_frame(frame)
 
             self.position_changed.emit(self._position)
         finally:
@@ -236,22 +262,22 @@ class VideoMasker(QObject):
 
     def _produce_frame(self, position: float):
         frame = QVideoFrame()
-        logger.debug("Rendering frame for position %.3f", position)
+        masker_logger.debug("_produce_frame: rendering frame for position %.3f", position)
         capture = self._cap
         if not capture:
-            logger.warning("No video capture available for rendering")
-            self._video_sink.setVideoFrame(QVideoFrame())
+            masker_logger.warning("_produce_frame: no video capture available for rendering")
+            self._emit_frame(QVideoFrame())
             return
         frame_idx = self._position_to_frame_index(position)
-        logger.debug("Sliding to frame %d", frame_idx)
+        masker_logger.debug("_produce_frame: sliding to frame %d", frame_idx)
         capture.set(CAP_PROP_POS_FRAMES, frame_idx)
         ok, img = capture.read()
         if not ok:
-            logger.warning("Cannot read frame %d", frame_idx)
+            masker_logger.warning("_produce_frame: cannot read frame %d", frame_idx)
             return
         self._mask_rendered = False
         if frame_idx < 0 or frame_idx >= len(self._history):
-            logger.debug("Frame index %d is not processed yet", frame_idx)
+            masker_logger.debug("_produce_frame: frame index %d is not processed yet", frame_idx)
         else:
             apply_red_mask(img, self._history[frame_idx])
             self._mask_rendered = True
@@ -260,7 +286,9 @@ class VideoMasker(QObject):
         return frame
 
     def _position_to_frame_index(self, position: float) -> int:
-        return int(position * self._total_frame_count)
+        idx = int(position * self._total_frame_count)
+        masker_logger.debug("_position_to_frame_index: %.3f -> %d", position, idx)
+        return idx
 
 
 def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
