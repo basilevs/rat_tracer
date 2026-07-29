@@ -23,6 +23,10 @@
         "/^source ${workspaceFolder}/\\.venv/bin/activate && cd ${workspaceFolder} && make check 2>&1 \\| tail -40$/": {
             "approve": true,
             "matchCommandLine": true
+        },
+        "/^source ${workspaceFolder}/\\.venv/bin/activate && cd ${workspaceFolder} && python -m pytest tests/test_video_masker\\.py -v 2>&1 \\| tail -40$/": {
+            "approve": true,
+            "matchCommandLine": true
         }
     }
 }
