@@ -155,7 +155,8 @@ class VideoMasker(QObject):
                 # PySide Property setter
                 self.position = processed_position  # type: ignore[assignment]
         else:
-            if not self._mask_rendered and self.position < processed_position:
+            # self.position is PySide property behaving like a float, type information is invalid
+            if not self._mask_rendered and self.position < processed_position:  # type: ignore[operator]
                 self._schedule_render()
 
     def _get_video_output(self) -> QObject:
