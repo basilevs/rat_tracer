@@ -1,4 +1,5 @@
 import argparse
+import os
 from logging import DEBUG, basicConfig, getLogger
 from pathlib import Path
 from signal import SIGINT, signal
@@ -339,7 +340,10 @@ def handleIntSignal(signum, frame):
 
 
 def main():
-    basicConfig()
+    if os.environ.get("RAT_TRACER_LOG_TIMING"):
+        basicConfig(format="%(relativeCreated)d ms %(levelname)s:%(name)s: %(message)s")
+    else:
+        basicConfig()
     strings = resolve_translations(QLocale.system().name())
     parser = argparse.ArgumentParser(description=strings["cli_description"])
     parser.add_argument("-v", "--video", type=Path, default=None, help=strings["cli_video_help"])

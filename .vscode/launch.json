@@ -10,7 +10,8 @@
             "request": "launch",
             "program": "rat_tracer/ui.py",
             "args": ["--video", "input/2026-01-15-2.mp4"],
-            "console": "integratedTerminal"
+            "console": "integratedTerminal",
+            "env": {"RAT_TRACER_LOG_TIMING": "1"}
         },
         {
             "name": "Python Debugger: Current File",
