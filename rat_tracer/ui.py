@@ -188,6 +188,7 @@ class VideoMasker(QObject):
         self._thread = None
         self._video = None
         self._history.clear()
+        self._mask_rendered = False
         self._position = 0.0
         self._cap = None
         self._total_frame_count = 0.0
