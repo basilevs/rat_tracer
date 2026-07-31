@@ -1,4 +1,6 @@
-import QtQuick 2.0
+// Versionless: Shortcut needs QtQuick 2.5 or later, and Qt 6 resolves
+// versionless imports to the newest available module.
+import QtQuick
 import QtQuick.Layouts 1.11
 import QtQuick.Controls 2.1
 import QtQuick.Window 2.1
@@ -19,6 +21,31 @@ ApplicationWindow {
         id: "masker"
         playing: page.playing
         video_output: videoOutput
+        onMark_saved: (frameIndex) => toast.show(tr.mark_saved_toast.replace("{index}", frameIndex), true)
+        onMark_failed: (frameIndex) => toast.show(tr.mark_failed_toast.replace("{index}", frameIndex), false)
+        onProblem_mode_changed: (active) => { if (active) page.playing = false }
+    }
+
+    // Marking never navigates and never blocks: the researcher can seek or
+    // step to the next frame of interest while the write is still in flight.
+    function markBadFrame() {
+        masker.markBadFrame()
+    }
+
+    Shortcut {
+        // Layout-independent: Qt reports letter keys per the active keyboard
+        // layout, so a letter shortcut would move under a Russian layout.
+        sequence: "F2"
+        enabled: masker.can_mark && !masker.frame_marked
+        onActivated: markBadFrame()
+    }
+    Shortcut {
+        sequence: StandardKey.MoveToPreviousChar
+        onActivated: masker.stepFrame(-1)
+    }
+    Shortcut {
+        sequence: StandardKey.MoveToNextChar
+        onActivated: masker.stepFrame(1)
     }
     FileDialog {
         id: fileDialog
@@ -79,6 +106,22 @@ ApplicationWindow {
                     page.playing = !page.playing
                 }
             }
+            Button {
+                objectName: "previousFrameButton"
+                text: tr.previous_frame
+                enabled: masker.video != ""
+                ToolTip.visible: hovered
+                ToolTip.text: tr.previous_frame_tooltip
+                onClicked: masker.stepFrame(-1)
+            }
+            Button {
+                objectName: "nextFrameButton"
+                text: tr.next_frame
+                enabled: masker.video != ""
+                ToolTip.visible: hovered
+                ToolTip.text: tr.next_frame_tooltip
+                onClicked: masker.stepFrame(1)
+            }
             TextEdit {
                 id: clipboardHelper
                 visible: false
@@ -92,6 +135,36 @@ ApplicationWindow {
                     clipboardHelper.selectAll()
                     clipboardHelper.copy()
                 }
+            }
+            Label {
+                objectName: "frameIndexLabel"
+                text: tr.frame_label.replace("{index}", masker.frame_index)
+            }
+            Item { Layout.fillWidth: true }
+            Switch {
+                objectName: "problemModeSwitch"
+                text: tr.problem_mode_button
+                enabled: masker.video != ""
+                checked: masker.problem_mode
+                ToolTip.visible: hovered
+                ToolTip.text: tr.problem_mode_tooltip
+                // Driven from the backend rather than from the checked state:
+                // resuming playback leaves the mode, and the switch has to
+                // follow that instead of fighting it.
+                onToggled: masker.problem_mode = checked
+            }
+            CheckBox {
+                objectName: "markBadFrameCheckBox"
+                text: tr.mark_bad_frame
+                // Stateful, not fire-and-forget: it shows whether the frame on
+                // screen is already stored, so the researcher sees the answer
+                // before acting rather than discovering it by pressing.
+                checked: masker.frame_marked
+                enabled: masker.can_mark && !masker.frame_marked
+                ToolTip.visible: hovered
+                ToolTip.text: masker.frame_marked ? tr.frame_already_marked_tooltip
+                                                  : tr.mark_bad_frame_tooltip
+                onClicked: markBadFrame()
             }
         }
         Button {
@@ -107,4 +180,57 @@ ApplicationWindow {
         }
     }
 
+    // Floats over the video rather than sitting in the layout, so it never
+    // blocks seeking or frame stepping while it is visible.
+    Rectangle {
+        id: toast
+        objectName: "markToast"
+        property bool undoable: false
+        visible: false
+        radius: 4
+        color: undoable ? Material.color(Material.Grey, Material.Shade800)
+                        : Material.color(Material.Red, Material.Shade800)
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 80
+        implicitWidth: toastRow.implicitWidth + 24
+        implicitHeight: toastRow.implicitHeight + 16
+
+        function show(message, undoable) {
+            toastLabel.text = message
+            toast.undoable = undoable
+            toast.visible = true
+            dismissTimer.restart()
+        }
+
+        RowLayout {
+            id: toastRow
+            anchors.centerIn: parent
+            spacing: 12
+            Label {
+                id: toastLabel
+                objectName: "markToastLabel"
+            }
+            Button {
+                objectName: "undoMarkButton"
+                text: tr.undo_button
+                visible: toast.undoable
+                flat: true
+                onClicked: {
+                    masker.undoLastMark()
+                    toast.visible = false
+                    dismissTimer.stop()
+                }
+            }
+        }
+
+        Timer {
+            id: dismissTimer
+            // Five seconds is the whole correction window: a wrong mark not
+            // undone here travels to the technician, since there is no
+            // marked-frame navigation to find it again.
+            interval: 5000
+            onTriggered: toast.visible = false
+        }
+    }
 }
