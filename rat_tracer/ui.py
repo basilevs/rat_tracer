@@ -120,6 +120,9 @@ class VideoMasker(QObject):
             def frame_count(self) -> int:
                 return int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+            def fps(self) -> float:
+                return float(cap.get(cv2.CAP_PROP_FPS))
+
             @override
             def read(self, frame_idx: int) -> ndarray | None:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
