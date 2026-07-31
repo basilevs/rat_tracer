@@ -31,6 +31,32 @@ pip install git+https://github.com/basilevs/rat_tracer
 
 The painted track is never erased, so once a goal it painted over, you know to rewind back to find the exact moment it happens.
 
+# Reporting detection failures
+
+The painted track is cumulative, so a red area is the union of everything detected so far — you cannot tell from it whether *this* frame was detected correctly. "Check detection" answers that, and lets you save frames the detector gets wrong so they can be used to improve it later.
+
+- Tick "Check detection". Playback pauses, the track disappears, and the frame you stopped on is shown with only its own detection outlined.
+- Seek, or step frame by frame with ◀ / ▶ (or the arrow keys), until you see a failure: a box where there is no animal, no box where there is one, or a box that is offset or far too large.
+- Press "Mark bad frame" (or F2). The frame is saved; a message names it and offers Undo for five seconds.
+- The control shows as already ticked for a frame you have saved before, so you never store the same one twice.
+- Untick "Check detection" — or just press Play — to get the cumulative track back. Nothing is lost from it.
+
+Saved frames accumulate across videos, experiments and restarts. When you want to hand them over, run:
+
+    rat_tracer-collect
+
+It takes no arguments and prints the path of the single archive it writes to your Desktop (or Documents). Nothing is deleted or moved, so you can run it as often as you like. Send that file to whoever maintains the model.
+
+Set `RAT_TRACER_BAD_FRAMES` to keep saved frames somewhere else — a removable drive, for instance.
+
+## Ingesting a collection round (for the model maintainer)
+
+Extract the archive and annotate `images/*.png` in YOLO format, placing the labels in `labels/` beside it. The image names are the same ones `video_to_images.py` produces, so `split.py` accepts the directory unchanged:
+
+    split.py <extracted-dir> data
+
+Each frame has a sidecar in `meta/` recording what the model produced for it (an empty `boxes` list means it detected nothing — a missed detection), which weights produced it, and when it was marked. `index.jsonl` logs every mark and retraction, so `video_key` + `frame_index` identifies frames already ingested in an earlier round, and `marked_at` tells you which are new.
+
 [![Rat Tracer traversal evaluation workflow](https://img.youtube.com/vi/Ybt3lNtIi9M/0.jpg)](https://www.youtube.com/watch?v=Ybt3lNtIi9M)
 
 
