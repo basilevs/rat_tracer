@@ -87,8 +87,47 @@ question in favour of boxes.
 - `rat_tracer/collect.py` — `rat_tracer-collect` console entry point.
 - `rat_tracer/translations.py` — `en` and `ru` for every new string.
 
+## Verified end to end
+
+All three phases are implemented. Beyond the unit and integration suites
+(`make test`, 83 offline tests), the whole flow was driven once through the
+real stack — real video, real ultralytics, real Qt, real storage — with
+locally-built weights standing in for the published model, which cannot be
+downloaded in the agent environment:
+
+- Warm detection after a seek: **0.11 s**, comfortably inside the 1 s bound.
+- Marking stores pixels byte-identical to the decoded frame, does not move the
+  position, and the control turns to "marked".
+- Undo deletes both files and leaves `mark`, `retract` in the index.
+- Resuming playback leaves the mode; stepping moves exactly one frame.
+- `rat_tracer-collect` archives the tree without touching the source.
+- QML: both toast paths render with the frame index, controls are disabled
+  with no video open, and the slider no longer takes keyboard focus (a focused
+  Slider would consume Left/Right and move the position by a slider step at the
+  same time as the frame-step shortcut moved it by one frame).
+
 ## Still open
 
 - **Reference machine for the 1 s bound.** The PRD leaves it TBD. Measurements
-  above are from a 4-core container; a cold model load on a CPU-only field
-  laptop is the case most likely to break the bound.
+  are from a 4-core container; a cold model load on a CPU-only field laptop is
+  the case most likely to break the bound.
+- **The first frame after entering the mode costs the model load.** Measured
+  3.6 s end to end, against 0.11 s for every frame after it. The detector
+  prewarms on its worker thread, but that thread only starts when the mode is
+  entered, so the first request queues behind the load. Starting the worker
+  when the video opens would hide it entirely, at the cost of loading a second
+  model for researchers who never enter the mode. Worth deciding once the
+  reference machine is known, since it is exactly the "cold load on a slow
+  laptop" case the PRD flags.
+- **Near-duplicate frames are not deduplicated on ingest.** The PRD's headline
+  risk is annotation cost, and neighbouring frames of the same failure are
+  highly correlated. `duplicates.py` already exists in the repo; whether ingest
+  should use it, or the app should cap marks per video, is still the open
+  decision the PRD records.
+- **The detection cache is unbounded** for the lifetime of an open video (one
+  small entry per frame visited in the mode). Not a practical concern at
+  session scale, but it is not evicted.
+- **Undo covers the most recent mark only**, matching the PRD's five-second
+  window. Marking a second frame makes the first one unreachable, as designed.
+- The pre-existing mypy baseline (10 errors, `Results | Tensor` unions from
+  ultralytics) is untouched.

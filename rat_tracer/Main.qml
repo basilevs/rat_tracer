@@ -87,6 +87,10 @@ ApplicationWindow {
             id: "slider"
             Layout.fillWidth: true
             objectName: "slider_here"
+            // A focused Slider consumes Left/Right itself, which would move
+            // the position by a slider step at the same time as the
+            // frame-step shortcut moves it by one frame. Dragging still works.
+            focusPolicy: Qt.NoFocus
             onMoved: {
                 masker.position = slider.value;
                 page.playing = false;
