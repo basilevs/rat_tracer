@@ -168,7 +168,15 @@ ApplicationWindow {
                 ToolTip.visible: hovered
                 ToolTip.text: masker.frame_marked ? tr.frame_already_marked_tooltip
                                                   : tr.mark_bad_frame_tooltip
-                onClicked: markBadFrame()
+                onClicked: {
+                    // Clicking a CheckBox flips `checked` locally, which would
+                    // claim the frame is stored before the write was even
+                    // attempted -- and leave it claiming that if the save
+                    // fails. Restore the binding at once so the tick only ever
+                    // reports what is actually on disk.
+                    checked = Qt.binding(function() { return masker.frame_marked })
+                    markBadFrame()
+                }
             }
         }
         Button {

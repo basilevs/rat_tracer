@@ -348,3 +348,70 @@ def test_the_sidecar_records_what_the_model_produced(qapp, harness):
     assert meta["frame_index"] == frame_index
     assert meta["timestamp_ms"] == int(frame_index / 25.0 * 1000)
     masker.reset()
+
+
+def test_a_second_click_before_the_write_lands_stores_one_frame(qapp, harness):
+    """The control's own tick flips on click, so ``frame_marked`` is still
+    false while the write is queued -- without an in-flight guard the control
+    would still look available and a double click would append two mark rows,
+    which the index must never show for one frame."""
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+
+    masker.markBadFrame()
+    assert not masker.can_mark, "the control is disabled while the write is in flight"
+    masker.markBadFrame()
+    harness.pump(masker)
+
+    assert len(list((harness.root / "images").glob("*.png"))) == 1
+    events = [
+        line.split('"event": "')[1].split('"')[0]
+        for line in (harness.root / "index.jsonl").read_text().splitlines()
+    ]
+    assert events == ["mark"], f"one frame must never produce two mark rows: {events}"
+    masker.reset()
+
+
+def test_the_control_is_refreshed_even_when_nothing_is_stored(qapp, harness):
+    """A click flips the tick locally, so every path out of markBadFrame --
+    including the ones that store nothing -- has to tell the control to go back
+    to reporting what is on disk."""
+    masker = harness.open()  # not in problem mode: marking is impossible
+    refreshes: list[int] = []
+    masker.mark_state_changed.connect(lambda: refreshes.append(1))
+
+    masker.markBadFrame()
+
+    assert refreshes, "the control was left claiming a state it does not have"
+    masker.reset()
+
+
+def test_the_control_stops_showing_a_mark_once_the_undo_has_run(qapp, harness):
+    """Undo is a background job too: the files are gone only when it has run."""
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+    masker.markBadFrame()
+    harness.pump(masker)
+    assert masker.frame_marked
+
+    masker.undoLastMark()
+    harness.pump(masker)
+
+    assert not masker.frame_marked
+    masker.reset()
+
+
+def test_a_failed_save_frees_the_frame_to_be_marked_again(qapp, harness, monkeypatch):
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+
+    def explode(self, request):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(BadFrameStore, "mark", explode)
+    masker.markBadFrame()
+    harness.pump(masker)
+
+    assert not masker.frame_marked
+    assert masker.can_mark, "a failed write must not disable the control forever"
+    masker.reset()

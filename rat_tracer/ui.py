@@ -207,6 +207,7 @@ class MarkStorageWorker(_Worker):
 
     markSaved = Signal(int)
     markFailed = Signal(int)
+    markRetracted = Signal(int)
 
     def __init__(self, store: BadFrameStore, parent=None):
         super().__init__("storage", parent)
@@ -226,7 +227,11 @@ class MarkStorageWorker(_Worker):
         self.submit(job)
 
     def retract(self, video_key_value: str, frame_index: int, video_stem: str) -> None:
-        self.submit(lambda: self._store.retract(video_key_value, frame_index, video_stem))
+        def job():
+            self._store.retract(video_key_value, frame_index, video_stem)
+            self.markRetracted.emit(frame_index)
+
+        self.submit(job)
 
 
 @QmlElement
@@ -256,6 +261,11 @@ class VideoMasker(QObject):
         self._storage_worker: MarkStorageWorker | None = None
         self._store: BadFrameStore | None = None
         self._requested_detections: set[int] = set()
+        # Frames whose write has been queued but not finished. Marking is a
+        # background job, so ``frame_marked`` stays false until it lands --
+        # without this the control would still look available and a second
+        # click would queue a second write for the same frame.
+        self._pending_marks: set[int] = set()
         self._last_mark: tuple[str, int, str] | None = None
         masker_logger.debug("__init__: VideoMasker initialized")
 
@@ -350,6 +360,7 @@ class VideoMasker(QObject):
         self._video_key = None
         self._last_mark = None
         self._requested_detections.clear()
+        self._pending_marks.clear()
         self._stop_workers()
         self._core.reset()
         self._emit_frame(QVideoFrame())
@@ -497,7 +508,12 @@ class VideoMasker(QObject):
 
     @Property(bool, notify=mark_state_changed)
     def can_mark(self) -> bool:
-        return self._core.can_mark and self._video is not None and self._video_key is not None
+        return (
+            self._core.can_mark
+            and self._video is not None
+            and self._video_key is not None
+            and self._core.current_frame_index not in self._pending_marks
+        )
 
     @Property(bool, notify=mark_state_changed)
     def frame_marked(self) -> bool:
@@ -520,6 +536,7 @@ class VideoMasker(QObject):
             worker = MarkStorageWorker(self._ensure_store())
             worker.markSaved.connect(self._on_mark_saved)
             worker.markFailed.connect(self._on_mark_failed)
+            worker.markRetracted.connect(self._on_mark_retracted)
             self._storage_worker = worker
             worker.start()
         return self._storage_worker
@@ -531,8 +548,12 @@ class VideoMasker(QObject):
         Reads the current frame; it never navigates, so the position and the
         recorded coverage are untouched.
         """
+        # Every path out of this method ends in mark_state_changed, including
+        # the ones that store nothing: a click flips the control's own tick, so
+        # the control has to be told to go back to reporting what is on disk.
         if not self.can_mark:
             masker_logger.debug("markBadFrame: ignored, nothing judged on screen")
+            self.mark_state_changed.emit()
             return
         assert self._video is not None and self._video_key is not None
         frame_index = self._core.current_frame_index
@@ -540,9 +561,11 @@ class VideoMasker(QObject):
         detection = self._core.detection_for(frame_index)
         if image is None or detection is None:
             masker_logger.warning("markBadFrame: no raw frame or detection for %d", frame_index)
+            self.mark_state_changed.emit()
             return
         if self._ensure_store().is_marked(self._video_key, frame_index):
             masker_logger.debug("markBadFrame: frame %d is already marked", frame_index)
+            self.mark_state_changed.emit()
             return
         worker = self._ensure_storage_worker()
         detector = self._detector_worker
@@ -556,7 +579,11 @@ class VideoMasker(QObject):
             model_id=detector.model_id if detector is not None else "unknown",
         )
         self._last_mark = (self._video_key, frame_index, self._video.stem)
+        self._pending_marks.add(frame_index)
         worker.mark(request)
+        # Disables the control for this frame straight away, so a second click
+        # cannot queue a second write for it.
+        self.mark_state_changed.emit()
 
     @Slot()
     def undoLastMark(self) -> None:
@@ -580,15 +607,24 @@ class VideoMasker(QObject):
     @Slot(int)
     def _on_mark_saved(self, frame_index: int) -> None:
         masker_logger.info("Marked frame %d", frame_index)
+        self._pending_marks.discard(frame_index)
         self.mark_state_changed.emit()
         self.mark_saved.emit(frame_index)
 
     @Slot(int)
     def _on_mark_failed(self, frame_index: int) -> None:
         masker_logger.error("Could not store frame %d", frame_index)
+        self._pending_marks.discard(frame_index)
         self._last_mark = None
         self.mark_state_changed.emit()
         self.mark_failed.emit(frame_index)
+
+    @Slot(int)
+    def _on_mark_retracted(self, frame_index: int) -> None:
+        # The files are gone only once the worker has run, so the control has
+        # to be refreshed then rather than when Undo was pressed.
+        masker_logger.info("Retracted frame %d", frame_index)
+        self.mark_state_changed.emit()
 
 
 def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:
