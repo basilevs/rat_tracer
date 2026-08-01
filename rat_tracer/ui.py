@@ -2,7 +2,7 @@ import argparse
 import os
 from logging import DEBUG, basicConfig, getLogger
 from pathlib import Path
-from queue import Empty, Queue
+from queue import Empty, Queue, ShutDown
 from signal import SIGINT, signal
 from sys import argv, exit
 from time import time
@@ -107,16 +107,26 @@ class _Worker(QThread):
     stale detection must not overwrite a fresh one.
     """
 
+    #: Whether ``stop`` abandons jobs that are still queued. Work whose result
+    #: is worthless once the video is closed says yes; work that must not be
+    #: lost says no and is drained first.
+    discards_queued_jobs = False
+
     def __init__(self, name: str, parent=None):
         super().__init__(parent)
         self._queue: Queue = Queue()
         self._log = logger.getChild(name)
 
     def submit(self, job) -> None:
-        self._queue.put(job)
+        try:
+            self._queue.put(job)
+        except ShutDown:
+            # Raced with teardown: the thread is on its way out and nothing is
+            # left to run this.
+            self._log.debug("dropping a job submitted after shutdown")
 
     def stop(self) -> None:
-        self._queue.put(None)
+        self._queue.shutdown(immediate=self.discards_queued_jobs)
 
     def _drain(self, job):
         """Hook for workers that only care about the most recent job."""
@@ -125,8 +135,9 @@ class _Worker(QThread):
     def run(self):
         self._startup()
         while True:
-            job = self._queue.get()
-            if job is None:
+            try:
+                job = self._queue.get()
+            except ShutDown:
                 self._log.debug("stopping")
                 return
             job = self._drain(job)
@@ -156,6 +167,10 @@ class FrameDetectionWorker(_Worker):
     detectionReady = Signal(int, object)
     detectionFailed = Signal(int)
 
+    # A detection is only interesting for a frame the researcher is looking at,
+    # so anything still queued when the video closes is already worthless.
+    discards_queued_jobs = True
+
     def __init__(self, detector: FrameDetector, parent=None):
         super().__init__("detector", parent)
         self._detector = detector
@@ -178,8 +193,9 @@ class FrameDetectionWorker(_Worker):
                 newer = self._queue.get_nowait()
             except Empty:
                 return job
-            if newer is None:
-                self._queue.put(None)  # let run() see the stop signal
+            except ShutDown:
+                # Teardown began while requests were still stacked up; let the
+                # main loop see the shutdown rather than running one more.
                 return None
             job = newer
 

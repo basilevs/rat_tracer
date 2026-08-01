@@ -14,6 +14,7 @@ deterministic while still exercising the jobs ``VideoMasker`` actually submits.
 import os
 import pickle
 from pathlib import Path
+from queue import Empty, ShutDown
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -138,10 +139,8 @@ def harness(monkeypatch, tmp_path):
                     while True:
                         try:
                             job = worker._queue.get_nowait()
-                        except Exception:
+                        except (Empty, ShutDown):
                             break
-                        if job is None:
-                            continue
                         # Through the worker's own error handling, so a failing
                         # job behaves here exactly as it would on the thread.
                         worker.run_job(job)
