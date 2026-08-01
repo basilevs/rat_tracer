@@ -36,8 +36,16 @@ ApplicationWindow {
         // Layout-independent: Qt reports letter keys per the active keyboard
         // layout, so a letter shortcut would move under a Russian layout.
         sequence: "F2"
-        enabled: masker.can_mark && !masker.frame_marked
-        onActivated: markBadFrame()
+        enabled: masker.can_mark
+        // Mirrors the control: the same key that stores the frame on screen
+        // withdraws it again, so the shortcut and the tick never disagree.
+        onActivated: {
+            if (masker.frame_marked) {
+                masker.unmarkFrame()
+            } else {
+                markBadFrame()
+            }
+        }
     }
     Shortcut {
         sequence: StandardKey.MoveToPreviousChar
@@ -164,7 +172,7 @@ ApplicationWindow {
                 // screen is already stored, so the researcher sees the answer
                 // before acting rather than discovering it by pressing.
                 checked: masker.frame_marked
-                enabled: masker.can_mark && !masker.frame_marked
+                enabled: masker.can_mark
                 ToolTip.visible: hovered
                 ToolTip.text: masker.frame_marked ? tr.frame_already_marked_tooltip
                                                   : tr.mark_bad_frame_tooltip
@@ -173,9 +181,15 @@ ApplicationWindow {
                     // claim the frame is stored before the write was even
                     // attempted -- and leave it claiming that if the save
                     // fails. Restore the binding at once so the tick only ever
-                    // reports what is actually on disk.
+                    // reports what is actually on disk, and decide from the
+                    // backend's state rather than from the tick just flipped.
+                    var wasStored = masker.frame_marked
                     checked = Qt.binding(function() { return masker.frame_marked })
-                    markBadFrame()
+                    if (wasStored) {
+                        masker.unmarkFrame()
+                    } else {
+                        markBadFrame()
+                    }
                 }
             }
         }

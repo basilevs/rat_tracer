@@ -47,6 +47,7 @@ question in favour of boxes.
 | `model_id` in the sidecar | HF ref by default; under `RAT_TRACER_MODEL`, the local path plus a content hash (`file:/…/last.pt#crc32=…`), since `last.pt` is overwritten every training run. |
 | Filename stem collision (FR-15) | Keep the PRD's accepted overwrite, but **log a warning** at mark time so the loss is visible. |
 | ±N neighbouring frames | No, per the PRD's own proposal. Revisit after Phase 1. |
+| Unmarking a stored frame | **Allowed from the mark control**, logged as an ordinary `retract` row. The PRD rules pruning out of scope, but its reason is that marked frames cannot be *found* again — which does not apply to the frame already on screen, whose control already says it is stored. Consequence to accept: `retract` rows now mix deliberate withdrawals with five-second misclick corrections, so the retraction-rate metric measures both. |
 
 ## Code gaps to address on the way
 

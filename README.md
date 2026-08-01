@@ -38,7 +38,7 @@ The painted track is cumulative, so a red area is the union of everything detect
 - Tick "Check detection". Playback pauses, the track disappears, and the frame you stopped on is shown with only its own detection outlined.
 - Seek, or step frame by frame with ◀ / ▶ (or the arrow keys), until you see a failure: a box where there is no animal, no box where there is one, or a box that is offset or far too large.
 - Press "Mark bad frame" (or F2). The frame is saved; a message names it and offers Undo for five seconds.
-- The control shows as already ticked for a frame you have saved before, so you never store the same one twice.
+- The control shows as already ticked for a frame you have saved before, so you never store the same one twice. Untick it (click, or F2 again) to remove a frame you saved by mistake — the five-second Undo only covers the frame you just saved, this works whenever the frame is on screen.
 - Untick "Check detection" — or just press Play — to get the cumulative track back. Nothing is lost from it.
 
 Saved frames accumulate across videos, experiments and restarts. When you want to hand them over, run:

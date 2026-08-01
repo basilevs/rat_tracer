@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 import pytest
-from PySide6.QtCore import QThread, QTimer
+from PySide6.QtCore import QMetaObject, QObject, QThread, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QVideoSink
 from rat_tracer import ui as ui_module
@@ -415,3 +415,134 @@ def test_a_failed_save_frees_the_frame_to_be_marked_again(qapp, harness, monkeyp
     assert not masker.frame_marked
     assert masker.can_mark, "a failed write must not disable the control forever"
     masker.reset()
+
+
+def test_unmarking_the_displayed_frame_removes_it(qapp, harness):
+    """The five-second Undo cannot help a researcher looking at a frame they
+    marked earlier. Nothing has to be navigated to here -- the frame is on
+    screen and the control already says it is stored."""
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+    masker.markBadFrame()
+    harness.pump(masker)
+    assert masker.frame_marked
+
+    masker.unmarkFrame()
+    harness.pump(masker)
+
+    assert not masker.frame_marked
+    assert list((harness.root / "images").glob("*.png")) == []
+    assert list((harness.root / "meta").glob("*.json")) == []
+    events = [
+        line.split('"event": "')[1].split('"')[0]
+        for line in (harness.root / "index.jsonl").read_text().splitlines()
+    ]
+    assert events == ["mark", "retract"]
+    masker.reset()
+
+
+def test_a_frame_can_be_marked_again_after_being_unmarked(qapp, harness):
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+    masker.markBadFrame()
+    harness.pump(masker)
+    masker.unmarkFrame()
+    harness.pump(masker)
+
+    assert masker.can_mark, "the control must be usable again"
+    masker.markBadFrame()
+    harness.pump(masker)
+
+    assert masker.frame_marked
+    assert len(list((harness.root / "images").glob("*.png"))) == 1
+    masker.reset()
+
+
+def test_a_second_unmark_click_removes_one_frame_once(qapp, harness):
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+    masker.markBadFrame()
+    harness.pump(masker)
+
+    masker.unmarkFrame()
+    assert not masker.can_mark, "the control is disabled while the removal is in flight"
+    masker.unmarkFrame()
+    harness.pump(masker)
+
+    events = [
+        line.split('"event": "')[1].split('"')[0]
+        for line in (harness.root / "index.jsonl").read_text().splitlines()
+    ]
+    assert events == ["mark", "retract"], f"one removal must append one row: {events}"
+    masker.reset()
+
+
+def test_unmarking_an_unmarked_frame_stores_nothing(qapp, harness):
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+
+    masker.unmarkFrame()
+    harness.pump(masker)
+
+    assert not (harness.root / "index.jsonl").exists()
+    masker.reset()
+
+
+def test_undo_after_unmarking_does_not_remove_a_later_mark(qapp, harness):
+    """Undo targets the last mark; once that frame has been withdrawn by hand
+    there is nothing left for it to remove."""
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+    masker.markBadFrame()
+    harness.pump(masker)
+    masker.unmarkFrame()
+    harness.pump(masker)
+
+    masker.undoLastMark()
+    harness.pump(masker)
+
+    events = [
+        line.split('"event": "')[1].split('"')[0]
+        for line in (harness.root / "index.jsonl").read_text().splitlines()
+    ]
+    assert events == ["mark", "retract"], f"Undo had nothing left to remove: {events}"
+    masker.reset()
+
+
+def test_clicking_the_ticked_control_removes_the_stored_frame(qapp, harness):
+    """Drives Main.qml's own control, not the slot behind it: the click has to
+    route to removal when the frame is stored, and the control has to be
+    enabled for that to be reachable at all."""
+    from PySide6.QtQml import QQmlApplicationEngine
+    from PySide6.QtQuickControls2 import QQuickStyle
+    from rat_tracer.translations import resolve_translations
+
+    QQuickStyle.setStyle("Material")
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("tr", resolve_translations("en"))
+    engine.load(Path(ui_module.__file__).parent / "Main.qml")
+    window = engine.rootObjects()[0]
+    masker = window.findChild(VideoMasker)
+    assert masker is not None
+    control = window.findChild(QObject, "markBadFrameCheckBox")
+    assert control is not None
+
+    masker.video = _VIDEO  # type: ignore[assignment]
+    masker.playing = False  # type: ignore[assignment]
+    _enter_problem_mode(masker, harness, 0.5)
+    masker.markBadFrame()
+    harness.pump(masker)
+    qapp.processEvents()
+    assert control.property("checked")
+    assert control.property("enabled"), "a stored frame must still be clickable to withdraw it"
+
+    QMetaObject.invokeMethod(control, "toggle")
+    QMetaObject.invokeMethod(control, "clicked")
+    harness.pump(masker)
+    qapp.processEvents()
+
+    assert not masker.frame_marked
+    assert not control.property("checked")
+    assert list((harness.root / "images").glob("*.png")) == []
+    masker.reset()
+    del engine

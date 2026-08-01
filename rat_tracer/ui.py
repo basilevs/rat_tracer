@@ -592,7 +592,39 @@ class VideoMasker(QObject):
             return
         key, frame_index, stem = self._last_mark
         self._last_mark = None
-        self._ensure_storage_worker().retract(key, frame_index, stem)
+        self._retract(key, frame_index, stem)
+
+    @Slot()
+    def unmarkFrame(self) -> None:
+        """Delete everything stored for the frame on screen.
+
+        The five-second Undo is the correction for a misclick, but it cannot
+        help a researcher looking straight at a frame they marked earlier and
+        now want to withdraw. Nothing has to be navigated to for that -- the
+        frame is already displayed and the control already says it is stored --
+        so this is the one place pruning costs nothing.
+        """
+        if self._video is None or self._video_key is None:
+            self.mark_state_changed.emit()
+            return
+        frame_index = self._core.current_frame_index
+        if frame_index in self._pending_marks:
+            # A write or an earlier removal for this frame is still in flight.
+            self.mark_state_changed.emit()
+            return
+        if not self._ensure_store().is_marked(self._video_key, frame_index):
+            self.mark_state_changed.emit()
+            return
+        if self._last_mark is not None and self._last_mark[1] == frame_index:
+            # The toast's Undo would now have nothing left to remove.
+            self._last_mark = None
+        self._retract(self._video_key, frame_index, self._video.stem)
+
+    def _retract(self, video_key_value: str, frame_index: int, stem: str) -> None:
+        self._pending_marks.add(frame_index)
+        self._ensure_storage_worker().retract(video_key_value, frame_index, stem)
+        # Disables the control until the removal has actually run, so a second
+        # click cannot queue a second removal.
         self.mark_state_changed.emit()
 
     @Slot(int)
@@ -622,8 +654,9 @@ class VideoMasker(QObject):
     @Slot(int)
     def _on_mark_retracted(self, frame_index: int) -> None:
         # The files are gone only once the worker has run, so the control has
-        # to be refreshed then rather than when Undo was pressed.
+        # to be refreshed then rather than when the removal was requested.
         masker_logger.info("Retracted frame %d", frame_index)
+        self._pending_marks.discard(frame_index)
         self.mark_state_changed.emit()
 
 
