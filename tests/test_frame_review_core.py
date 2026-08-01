@@ -1,20 +1,21 @@
-"""Direct unit tests for MaskRenderCore -- the Humble Object extraction of
+"""Direct unit tests for FrameReviewCore -- the Humble Object extraction of
 VideoMasker's paused/playing render decision logic (see rat_tracer.ui).
 
 Unlike test_video_masker.py, none of this needs Qt at all: no QObject, no
-QThread, no QTimer, no monkeypatching of Qt's scheduler. MaskRenderCore is a
+QThread, no QTimer, no monkeypatching of Qt's scheduler. FrameReviewCore is a
 plain class, so its logic is driven directly and synchronously by calling its
 methods -- the same two scenarios from repro.log, without the caveat (noted
 in test_video_masker.py's worker_harness docstring) that faking QThread/QTimer
 to run synchronously changes real cross-thread timing semantics.
 """
 
+from pathlib import Path
 from typing import override
 
 import numpy as np
 from numpy import ndarray
 from rat_tracer.bad_frames import Detection
-from rat_tracer.mask_render_core import FrameCapture, MaskRenderCore
+from rat_tracer.frame_review_core import FrameCapture, FrameReviewCore
 
 _H, _W = 8, 12
 
@@ -40,7 +41,20 @@ class _FakeCapture(FrameCapture):
         return np.full((_H, _W, 3), shade, dtype=np.uint8)
 
 
-def _append_mask(core: MaskRenderCore) -> None:
+class _NoMarks:
+    """No frame is stored: marking behaviour is covered in test_bad_frame_marking."""
+
+    def is_marked(self, video_key: str, frame_index: int) -> bool:
+        return False
+
+
+def _open(core: FrameReviewCore, cap: _FakeCapture) -> None:
+    """Open a video the way VideoMasker does, identity included."""
+    core.marks = _NoMarks()
+    core.open(cap, Path("2026-07-30_run3.mp4"), "cafe1234")
+
+
+def _append_mask(core: FrameReviewCore) -> None:
     core.history.append(np.zeros((_H, _W), dtype=bool))
 
 
@@ -48,8 +62,8 @@ def test_seek_while_uncached_video_processes_then_mask_applies():
     """A seek landing before any frames are processed renders bare first,
     then re-renders with the mask once the background pass reaches that
     frame -- mirrors test_video_masker's uncached-video scenario."""
-    core = MaskRenderCore()
-    core.open(_FakeCapture(total_frames=10))
+    core = FrameReviewCore()
+    _open(core, _FakeCapture(total_frames=10))
     core.playing = False
 
     assert core.set_position(0.55)  # frame index 5 of 10
@@ -77,8 +91,8 @@ def test_reset_clears_mask_rendered_for_next_video():
     fully cached video while paused must not inherit the first video's
     mask_rendered=True, or _on_frame_ready's paused branch never re-renders
     (see rat_tracer.ui.VideoMasker.reset -- ebd5674 fixed this)."""
-    core = MaskRenderCore()
-    core.open(_FakeCapture(total_frames=10))
+    core = FrameReviewCore()
+    _open(core, _FakeCapture(total_frames=10))
     core.playing = False
     core.set_position(0.55)
     core.render_now()
@@ -91,7 +105,7 @@ def test_reset_clears_mask_rendered_for_next_video():
     core.reset()
     assert not core.mask_rendered, "reset() must clear the stale flag from video1"
 
-    core.open(_FakeCapture(total_frames=6))
+    _open(core, _FakeCapture(total_frames=6))
     for _ in range(6):
         _append_mask(core)  # video2 was already fully processed (cached) before
 
@@ -111,14 +125,14 @@ def test_reset_clears_mask_rendered_for_next_video():
 # --- problem reporting mode -------------------------------------------------
 
 
-def _paused_core(total_frames: int = 100) -> MaskRenderCore:
-    core = MaskRenderCore()
-    core.open(_FakeCapture(total_frames=total_frames))
+def _paused_core(total_frames: int = 100) -> FrameReviewCore:
+    core = FrameReviewCore()
+    _open(core, _FakeCapture(total_frames=total_frames))
     core.set_playing(False)
     return core
 
 
-def _fill_history(core: MaskRenderCore, frames: int) -> None:
+def _fill_history(core: FrameReviewCore, frames: int) -> None:
     """Give the cumulative pass a visible, non-empty mask over the whole frame."""
     for _ in range(frames):
         core.history.append(np.ones((_H, _W), dtype=bool))
@@ -298,8 +312,8 @@ def test_frame_index_and_timestamp_come_from_the_position():
 
 
 def test_a_video_without_a_frame_rate_reports_a_zero_timestamp():
-    core = MaskRenderCore()
-    core.open(_FakeCapture(total_frames=10, fps=0.0))
+    core = FrameReviewCore()
+    _open(core, _FakeCapture(total_frames=10, fps=0.0))
 
     assert core.timestamp_ms(5) == 0
 
@@ -334,7 +348,7 @@ def test_stepping_moves_exactly_one_frame_and_stops_at_the_ends():
 
 
 def test_stepping_without_a_video_does_nothing():
-    assert MaskRenderCore().step_frame(1) is None
+    assert FrameReviewCore().step_frame(1) is None
 
 
 def test_reset_clears_detections_from_the_previous_video():
@@ -343,8 +357,174 @@ def test_reset_clears_detections_from_the_previous_video():
     core.set_detection(50, Detection([[0.5, 0.5, 0.2, 0.2]], [0.9]))
 
     core.reset()
-    core.open(_FakeCapture(total_frames=100))
+    _open(core, _FakeCapture(total_frames=100))
 
     assert core.detection_for(50) is None
     assert core.raw_frame is None
     assert not core.can_mark
+
+
+# --- decisions that used to live in the Qt adapter --------------------------
+
+
+class _RecordedMarks:
+    """A stand-in for the storage tree: no files, no temp directories."""
+
+    def __init__(self, marked: set[tuple[str, int]] | None = None):
+        self.marked = marked or set()
+
+    def is_marked(self, video_key: str, frame_index: int) -> bool:
+        return (video_key, frame_index) in self.marked
+
+
+def _judged_core(total_frames: int = 100, marks=None) -> FrameReviewCore:
+    """A core showing a frame whose detection has arrived and been drawn."""
+    core = FrameReviewCore(marks=marks if marks is not None else _RecordedMarks())
+    core.open(_FakeCapture(total_frames=total_frames), Path("2026-07-30_run3.mp4"), "cafe1234")
+    core.set_playing(False)
+    core.set_problem_mode(True)
+    core.set_position(0.5)
+    core.render_now()
+    core.set_detection(core.current_frame_index, Detection([[0.5, 0.5, 0.2, 0.2]], [0.9]))
+    core.render_now()
+    return core
+
+
+def test_entering_problem_mode_pauses_playback():
+    """Judging a frame means stopping on it; the mode must not leave the
+    researcher chasing the playhead."""
+    core = FrameReviewCore(marks=_RecordedMarks())
+    _open(core, _FakeCapture(total_frames=100))
+    assert core.playing
+
+    core.set_problem_mode(True)
+
+    assert not core.playing
+
+
+def test_a_detection_is_requested_once_per_frame():
+    core = _judged_core()
+    core.set_position(0.25)
+    core.render_now()
+
+    request = core.take_detection_request()
+    assert request is not None
+    assert request.frame_index == 25
+    assert core.take_detection_request() is None, "the same frame must not be asked about twice"
+
+
+def test_the_requested_image_is_a_copy_of_the_raw_frame():
+    """The detector runs on another thread while rendering keeps mutating its
+    own frame, and the stored image must stay unannotated."""
+    core = _judged_core()
+    core.set_position(0.25)
+    core.render_now()
+
+    request = core.take_detection_request()
+
+    assert request is not None
+    assert core.raw_frame is not None
+    assert np.array_equal(request.image, core.raw_frame)
+    assert request.image is not core.raw_frame
+
+
+def test_a_failed_detection_can_be_asked_about_again():
+    """Otherwise one failure would disable the control for that frame for the
+    rest of the session."""
+    core = _judged_core()
+    core.set_position(0.25)
+    core.render_now()
+    request = core.take_detection_request()
+    assert request is not None
+
+    core.detection_failed(request.frame_index)
+
+    assert core.take_detection_request() is not None
+
+
+def test_a_mark_request_describes_the_frame_on_screen():
+    core = _judged_core()
+
+    request = core.build_mark_request(model_id="test-model:v1")
+
+    assert request is not None
+    assert request.frame_index == core.current_frame_index
+    assert request.video_key == "cafe1234"
+    assert request.video_stem == "2026-07-30_run3"
+    assert request.model_id == "test-model:v1"
+    assert request.detection == Detection([[0.5, 0.5, 0.2, 0.2]], [0.9])
+    assert request.timestamp_ms == core.timestamp_ms(core.current_frame_index)
+    assert core.raw_frame is not None
+    assert np.array_equal(request.image, core.raw_frame)
+    assert request.image is not core.raw_frame, "storage runs later, on another thread"
+
+
+def test_no_mark_request_without_a_judged_frame():
+    core = FrameReviewCore(marks=_RecordedMarks())
+    _open(core, _FakeCapture(total_frames=100))
+
+    assert core.build_mark_request(model_id="test-model:v1") is None
+
+
+def test_no_second_mark_request_for_an_already_stored_frame():
+    marks = _RecordedMarks()
+    core = _judged_core(marks=marks)
+    marks.marked.add(("cafe1234", core.current_frame_index))
+
+    assert core.frame_marked
+    assert core.build_mark_request(model_id="test-model:v1") is None
+
+
+def test_a_frame_being_stored_is_not_markable_again():
+    """Storage is asynchronous, so a second click would otherwise queue a
+    second write before the first has landed."""
+    core = _judged_core()
+    frame_index = core.current_frame_index
+
+    core.begin_storage(frame_index)
+    assert not core.can_mark
+    assert core.build_mark_request(model_id="test-model:v1") is None
+
+    core.end_storage(frame_index)
+    assert core.can_mark
+
+
+def test_the_unmark_target_is_the_frame_on_screen():
+    marks = _RecordedMarks()
+    core = _judged_core(marks=marks)
+    assert core.unmark_target() is None, "nothing stored yet"
+
+    marks.marked.add(("cafe1234", core.current_frame_index))
+
+    assert core.unmark_target() == ("cafe1234", core.current_frame_index, "2026-07-30_run3")
+
+
+def test_nothing_is_withdrawn_while_its_storage_is_in_flight():
+    marks = _RecordedMarks()
+    core = _judged_core(marks=marks)
+    marks.marked.add(("cafe1234", core.current_frame_index))
+    core.begin_storage(core.current_frame_index)
+
+    assert core.unmark_target() is None
+
+
+def test_the_time_readout_follows_the_frame_index():
+    core = _judged_core(total_frames=10_000)  # 25 fps
+    core.set_position(0.5)
+
+    assert core.current_frame_index == 5000
+    assert core.time_text == "00:03:20"
+
+
+def test_the_time_readout_is_available_before_a_video_is_opened():
+    """Regression: this used to reach into a capture that did not exist yet."""
+    assert FrameReviewCore().time_text == "00:00:00"
+
+
+def test_marking_state_is_false_without_a_storage_lookup():
+    """The core is handed a lookup; on its own it must not claim anything."""
+    core = FrameReviewCore()
+    _open(core, _FakeCapture(total_frames=10))
+    core.marks = None
+
+    assert not core.frame_marked

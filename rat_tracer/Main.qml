@@ -28,8 +28,11 @@ ApplicationWindow {
 
     // Marking never navigates and never blocks: the researcher can seek or
     // step to the next frame of interest while the write is still in flight.
-    function markBadFrame() {
-        masker.markBadFrame()
+    // Which way the control acts -- store or withdraw -- is the backend's
+    // decision, made against the state that also decides whether the control
+    // is usable at all.
+    function toggleMark() {
+        masker.toggleMark()
     }
 
     Shortcut {
@@ -39,13 +42,7 @@ ApplicationWindow {
         enabled: masker.can_mark
         // Mirrors the control: the same key that stores the frame on screen
         // withdraws it again, so the shortcut and the tick never disagree.
-        onActivated: {
-            if (masker.frame_marked) {
-                masker.unmarkFrame()
-            } else {
-                markBadFrame()
-            }
-        }
+        onActivated: toggleMark()
     }
     Shortcut {
         sequence: StandardKey.MoveToPreviousChar
@@ -181,15 +178,9 @@ ApplicationWindow {
                     // claim the frame is stored before the write was even
                     // attempted -- and leave it claiming that if the save
                     // fails. Restore the binding at once so the tick only ever
-                    // reports what is actually on disk, and decide from the
-                    // backend's state rather than from the tick just flipped.
-                    var wasStored = masker.frame_marked
+                    // reports what is actually on disk.
                     checked = Qt.binding(function() { return masker.frame_marked })
-                    if (wasStored) {
-                        masker.unmarkFrame()
-                    } else {
-                        markBadFrame()
-                    }
+                    toggleMark()
                 }
             }
         }

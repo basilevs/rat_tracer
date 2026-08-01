@@ -1,21 +1,34 @@
-"""Pure decision logic for VideoMasker's paused/playing render state machine.
+"""Every decision behind the video view, with no Qt in sight.
 
-This holds no Qt dependency (no QObject, QThread, QTimer, QVideoFrame) so it
-can be driven and unit-tested directly, without an event loop, real threads,
-or monkeypatching Qt's scheduling primitives. ``VideoMasker`` (rat_tracer.ui)
-is the "humble" adapter: it owns the Qt wiring (signals, QThread, QTimer,
-QVideoSink) and delegates every decision -- what to render, when a mask is
-already applied, whether a re-render needs scheduling -- to a ``MaskRenderCore``
-instance.
+The application is split so that this module answers *what should happen* and
+``VideoMasker`` (rat_tracer.ui) only arranges *when it happens*: signals,
+QThread, QTimer, QVideoSink. Nothing here imports Qt, so all of it can be
+driven directly in tests -- no event loop, no real threads, no monkeypatching
+of Qt's scheduling.
+
+The decisions living here are:
+
+* what to draw on the current frame -- the cumulative coverage mask, or, in
+  problem reporting mode, the boxes the detector produced for that frame alone;
+* whether a re-render is needed at all, and when the caller should schedule one;
+* which frame index and timestamp the researcher is looking at;
+* whether a detection should be requested, and for which frame;
+* whether the frame on screen may be marked, is already stored, or has a write
+  still in flight -- and what a mark record for it would contain.
+
+That last group is why this is not called a renderer: the same state that
+decides what is drawn decides what may be marked, and splitting them would
+mean keeping two copies of "which frame is the researcher actually judging".
 """
 
 from dataclasses import dataclass
 from logging import getLogger
+from pathlib import Path
 from typing import Protocol
 
 from numpy import ndarray
 
-from rat_tracer.bad_frames import Detection
+from rat_tracer.bad_frames import Detection, MarkRequest
 from rat_tracer.coverage import CoverageHistory
 from rat_tracer.paint import apply_red_mask, draw_detection_boxes
 
@@ -32,9 +45,27 @@ class FrameCapture(Protocol):
     def read(self, frame_idx: int) -> ndarray | None: ...
 
 
+class MarkedFrames(Protocol):
+    """The subset of :class:`~rat_tracer.bad_frames.BadFrameStore` needed here.
+
+    Injected rather than imported so the core keeps no opinion about storage --
+    and so its tests need no temp directories.
+    """
+
+    def is_marked(self, video_key: str, frame_index: int) -> bool: ...
+
+
+@dataclass(frozen=True)
+class DetectionRequest:
+    """A frame whose detection should be computed now."""
+
+    frame_index: int
+    image: ndarray
+
+
 @dataclass(frozen=True)
 class RenderOutcome:
-    """Result of :meth:`MaskRenderCore.render_now`.
+    """Result of :meth:`FrameReviewCore.render_now`.
 
     ``should_emit`` distinguishes "nothing changed, leave the current frame
     on screen" (False) from "show something now" (True). When ``should_emit``
@@ -50,10 +81,13 @@ class RenderOutcome:
 _NOTHING_TO_RENDER = RenderOutcome(should_emit=False)
 
 
-class MaskRenderCore:
-    """Decides what frame (if any) to show as the background pass progresses."""
+class FrameReviewCore:
+    """Decides what is shown, and what may be marked, as the pass progresses."""
 
-    def __init__(self) -> None:
+    def __init__(self, marks: MarkedFrames | None = None) -> None:
+        self.marks = marks
+        self.video_path: Path | None = None
+        self.video_key: str | None = None
         self.history = CoverageHistory()
         self.position = 0.0
         self.playing = True
@@ -78,21 +112,34 @@ class MaskRenderCore:
         self.raw_frame: ndarray | None = None
         self.rendered_frame_index: int | None = None
         self._force_render = False
+        # Frames already asked about, so seeking back and forth does not
+        # re-request an answer that is already on its way.
+        self._requested_detections: set[int] = set()
+        # Frames whose write or removal has been handed to storage but has not
+        # finished. Storage is asynchronous, so "marked" stays false meanwhile
+        # and without this the control would look available for a second click.
+        self._frames_in_flight: set[int] = set()
 
     def reset(self) -> None:
         self.history.clear()
         self.mask_rendered = False
         self.position = 0.0
         self.cap = None
+        self.video_path = None
+        self.video_key = None
         self.total_frame_count = 0.0
         self.fps = 0.0
         self._detections.clear()
+        self._requested_detections.clear()
+        self._frames_in_flight.clear()
         self.detection_rendered = False
         self.raw_frame = None
         self.rendered_frame_index = None
 
-    def open(self, cap: FrameCapture) -> None:
+    def open(self, cap: FrameCapture, video_path: Path, video_key: str) -> None:
         self.cap = cap
+        self.video_path = video_path
+        self.video_key = video_key
         self.total_frame_count = cap.frame_count()
         self.fps = cap.fps()
         if self.fps <= 0:
@@ -121,6 +168,10 @@ class MaskRenderCore:
         if self.problem_mode == value:
             return False
         logger.debug("set_problem_mode: %s", value)
+        if value:
+            # Judging a frame means stopping on it, so entering the mode pauses
+            # rather than leaving the researcher chasing the playhead.
+            self.playing = False
         self.problem_mode = value
         # The frame on screen was drawn for the other mode, and neither the
         # position nor the coverage has changed -- so ask for a repaint
@@ -308,6 +359,32 @@ class MaskRenderCore:
             return None
         return frame_idx
 
+    def take_detection_request(self) -> DetectionRequest | None:
+        """Claim the next detection to compute, or None if there is nothing.
+
+        Claiming is the point: the same frame is never asked about twice, and
+        the image handed over is a copy, because the caller runs the detector
+        on another thread while rendering keeps mutating its own frame.
+        """
+        frame_index = self.needs_detection()
+        if frame_index is None or frame_index in self._requested_detections:
+            return None
+        if self.rendered_frame_index != frame_index or self.raw_frame is None:
+            # The frame is not on screen yet; the render that puts it there
+            # gives the caller another chance to ask.
+            return None
+        self._requested_detections.add(frame_index)
+        logger.debug("take_detection_request: frame %d", frame_index)
+        return DetectionRequest(frame_index=frame_index, image=self.raw_frame.copy())
+
+    def detection_failed(self, frame_index: int) -> None:
+        """Let a frame be asked about again after its detection failed.
+
+        Otherwise a single failure -- a model that will not load, say -- would
+        leave the control disabled for that frame for the rest of the session.
+        """
+        self._requested_detections.discard(frame_index)
+
     def set_detection(self, frame_index: int, detection: Detection) -> bool:
         """Record a detection result. Returns True if a render is needed now."""
         self._detections[frame_index] = detection
@@ -328,13 +405,13 @@ class MaskRenderCore:
         return self._detections.get(self.current_frame_index)
 
     @property
-    def can_mark(self) -> bool:
-        """Whether the frame on screen is one the researcher has judged.
+    def showing_judged_frame(self) -> bool:
+        """Whether a detection result is actually displayed right now.
 
-        True only when a detection result is actually displayed: in problem
-        reporting mode, stopped, on a frame whose answer has arrived and been
-        drawn. Every stored mark is therefore something the researcher looked
-        at, which is why no metadata field has to assert it.
+        True only in problem reporting mode, stopped, on a frame whose answer
+        has arrived and been drawn. Every stored mark is therefore something
+        the researcher looked at, which is why no metadata field has to assert
+        it.
         """
         return (
             self.problem_mode
@@ -344,3 +421,90 @@ class MaskRenderCore:
             and self.rendered_frame_index == self.current_frame_index
             and self.detection_rendered
         )
+
+    @property
+    def can_mark(self) -> bool:
+        """Whether the control acts on the frame on screen at all.
+
+        Covers both directions: a judged frame can be stored, and a stored one
+        can be withdrawn. Only a frame whose storage is mid-flight is off
+        limits, so a second click cannot queue a second write or removal.
+        """
+        return (
+            self.showing_judged_frame
+            and self.video_path is not None
+            and self.video_key is not None
+            and self.current_frame_index not in self._frames_in_flight
+        )
+
+    @property
+    def frame_marked(self) -> bool:
+        """Whether the displayed frame is already stored.
+
+        The control is stateful so the researcher sees the answer before
+        acting, rather than discovering it by pressing.
+        """
+        if self.marks is None or self.video_key is None:
+            return False
+        return self.marks.is_marked(self.video_key, self.current_frame_index)
+
+    def build_mark_request(self, model_id: str) -> MarkRequest | None:
+        """Describe the frame on screen as a record to store, if it may be.
+
+        Returns None -- rather than raising -- for every reason a mark cannot
+        be made, because the caller's job is only to relay the answer to the
+        control, not to distinguish them.
+        """
+        if not self.can_mark:
+            logger.debug("build_mark_request: nothing judged on screen")
+            return None
+        assert self.video_path is not None and self.video_key is not None
+        frame_index = self.current_frame_index
+        image = self.raw_frame
+        detection = self._detections.get(frame_index)
+        if image is None or detection is None:
+            logger.warning("build_mark_request: no raw frame or detection for %d", frame_index)
+            return None
+        if self.frame_marked:
+            logger.debug("build_mark_request: frame %d is already marked", frame_index)
+            return None
+        return MarkRequest(
+            image=image.copy(),
+            video_path=self.video_path,
+            video_key=self.video_key,
+            frame_index=frame_index,
+            timestamp_ms=self.timestamp_ms(frame_index),
+            detection=detection,
+            model_id=model_id,
+        )
+
+    def unmark_target(self) -> tuple[str, int, str] | None:
+        """The ``(video_key, frame_index, stem)`` to withdraw, if any.
+
+        The five-second Undo is the correction for a misclick, but it cannot
+        help a researcher looking straight at a frame they marked earlier.
+        Nothing has to be navigated to for that -- the frame is on screen and
+        the control already says it is stored.
+        """
+        if not self.can_mark or not self.frame_marked:
+            return None
+        assert self.video_path is not None and self.video_key is not None
+        return (self.video_key, self.current_frame_index, self.video_path.stem)
+
+    def begin_storage(self, frame_index: int) -> None:
+        """Note that storage is now working on *frame_index*."""
+        self._frames_in_flight.add(frame_index)
+
+    def end_storage(self, frame_index: int) -> None:
+        """Note that storage has finished with *frame_index*, either way."""
+        self._frames_in_flight.discard(frame_index)
+
+    @property
+    def time_text(self) -> str:
+        """The displayed frame's position in the recording as HH:MM:SS."""
+        if self.cap is None:
+            return "00:00:00"
+        elapsed_seconds = self.timestamp_ms(self.current_frame_index) // 1000
+        hours, rem = divmod(elapsed_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"

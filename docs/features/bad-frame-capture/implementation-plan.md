@@ -54,7 +54,7 @@ question in favour of boxes.
 1. `VideoMasker._cap` is set only in `_set_video`, never in `__init__`, so
    [`time_text`](../../../rat_tracer/ui.py#L199) raises `AttributeError` before a
    video is opened. Reproduced live. FR-7 rewrites this readout anyway.
-2. No frame-rate source in `MaskRenderCore`; `time_text` reads
+2. No frame-rate source in `FrameReviewCore`; `time_text` reads
    `CAP_PROP_POS_MSEC` off the shared, stateful `VideoCapture`. FR-7's index and
    timestamp should both derive from `frame_index` and `CAP_PROP_FPS` inside the
    core, where they are testable.
@@ -70,7 +70,7 @@ question in favour of boxes.
    never sets (it currently derives from `argv[0]`). Set it in one shared place,
    and do **not** set `organizationName` — Linux would nest `rat_tracer/rat_tracer`.
 8. No model is available in the agent environment or CI, so the detector must be
-   injectable, in the humble-object style already used by `MaskRenderCore`.
+   injectable, in the humble-object style already used by `FrameReviewCore`.
 
 ## Module plan
 
@@ -79,7 +79,7 @@ question in favour of boxes.
   writes, `index.jsonl` append and replay, `(video_key, frame_index)` dedupe.
 - `rat_tracer/frame_detector.py` — on-demand single-frame inference behind an
   injectable interface, with its own model instance and a prewarm hook.
-- `rat_tracer/mask_render_core.py` — problem-reporting-mode state, box overlay
+- `rat_tracer/frame_review_core.py` — problem-reporting-mode state, box overlay
   decision, frame index and timestamp derivation. Stays Qt-free.
 - `rat_tracer/ui.py` — Qt wiring only: detector thread, save worker, new
   properties and slots for the mode, the mark control and the toast.
