@@ -496,6 +496,12 @@ class VideoMasker(QObject):
             t.requestInterruption()
             t.wait()
         self._thread = None
+        # Every thread this object started has to be joined here, not just the
+        # cumulative pass: reset() is what ``aboutToQuit`` runs, and a worker
+        # still parked on its queue at interpreter shutdown is destroyed while
+        # running, which Qt treats as fatal and aborts the process.
+        self._detection.stop()
+        self._storage.stop()
         self._video = None
         self._cap = None
         self._session.close_video()

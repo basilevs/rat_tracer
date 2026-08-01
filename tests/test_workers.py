@@ -11,9 +11,12 @@ import threading
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 import pytest
 from PySide6.QtGui import QGuiApplication
-from rat_tracer.ui import _Worker
+from rat_tracer import ui as ui_module
+from rat_tracer.bad_frames import Detection
+from rat_tracer.ui import QtDetectionService, QtMarkStorage, _Worker
 
 _TIMEOUT_S = 5.0
 _TIMEOUT_MS = 5000
@@ -124,6 +127,74 @@ def test_stopping_twice_is_harmless(qapp):
     worker.stop()  # must not raise
 
     assert worker.isFinished()
+
+
+class _InstantDetector:
+    """Answers without a model, so the thread under test is the only slow part."""
+
+    @property
+    def model_id(self) -> str:
+        return "test-model:v1"
+
+    def prewarm(self) -> None:
+        pass
+
+    def detect(self, image):
+        return Detection()
+
+
+def _record_workers(monkeypatch, name: str) -> list:
+    """Capture the worker instances a service starts, so the test can join them."""
+    started: list = []
+    real = getattr(ui_module, name)
+
+    class Recording(real):  # type: ignore[misc, valid-type]
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            started.append(self)
+
+    monkeypatch.setattr(ui_module, name, Recording)
+    return started
+
+
+def test_the_detection_service_leaves_no_thread_running(qapp, monkeypatch):
+    """Closing the video -- or the window -- must join the detector's thread.
+
+    A QThread still running when the interpreter tears PySide down is destroyed
+    while running, which Qt reports with qFatal and aborts the process.
+    """
+    monkeypatch.setattr(ui_module, "YoloFrameDetector", lambda *a, **k: _InstantDetector())
+    workers = _record_workers(monkeypatch, "FrameDetectionWorker")
+    service = QtDetectionService(on_ready=lambda *a: None, on_failed=lambda *a: None)
+    service.request(0, np.zeros((4, 4, 3), dtype=np.uint8))
+    assert workers, "requesting a detection starts the worker"
+
+    service.stop()
+
+    assert workers[0].wait(_TIMEOUT_MS), "the detector's thread is still running"
+    assert workers[0].isFinished()
+
+
+def test_the_mark_storage_leaves_no_thread_running(qapp, monkeypatch):
+    class _FakeStore:
+        def is_marked(self, video_key: str, frame_index: int) -> bool:
+            return False
+
+        def retract(self, video_key: str, frame_index: int, video_stem: str) -> None:
+            pass
+
+    monkeypatch.setattr(ui_module, "BadFrameStore", lambda *a, **k: _FakeStore())
+    workers = _record_workers(monkeypatch, "MarkStorageWorker")
+    storage = QtMarkStorage(
+        on_stored=lambda *a: None, on_failed=lambda *a: None, on_removed=lambda *a: None
+    )
+    storage.remove("cafe1234", 7, "experiment")
+    assert workers, "removing a mark starts the worker"
+
+    storage.stop()
+
+    assert workers[0].wait(_TIMEOUT_MS), "the storage thread is still running"
+    assert workers[0].isFinished()
 
 
 def test_a_failing_job_does_not_stop_the_worker(qapp):
