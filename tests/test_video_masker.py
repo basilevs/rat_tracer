@@ -77,6 +77,8 @@ class _FakeCapture:
             return float(self.total_frames)
         if prop == cv2.CAP_PROP_POS_MSEC:
             return self.frame_idx / self.fps * 1000.0
+        if prop == cv2.CAP_PROP_FPS:
+            return float(self.fps)
         return 0.0
 
     def set(self, prop, value):

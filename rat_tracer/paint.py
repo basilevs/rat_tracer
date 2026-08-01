@@ -1,4 +1,4 @@
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from logging import getLogger
 from pathlib import Path
 from platform import system
@@ -19,6 +19,7 @@ from cv2 import (  # type: ignore[attr-defined]
     getStructuringElement,
     imshow,
     morphologyEx,
+    rectangle,
     waitKey,
 )
 from numpy import add, bool_, dtype, multiply, ndarray, zeros
@@ -29,6 +30,9 @@ from rat_tracer.lib import model_path
 
 RAT_CLASS = 0
 ALPHA = 0.35
+#: BGR red, matching the coverage mask's hue so the two overlays read as one
+#: visual language.
+BOX_COLOR = (0, 0, 255)
 MACOS, LINUX, WINDOWS = (system() == x for x in ["Darwin", "Linux", "Windows"])
 
 logger = getLogger(__name__)
@@ -153,6 +157,25 @@ def generate_in_thread[T](generator: Generator[T], maxsize: int = 100) -> Genera
 def apply_red_mask(img: ndarray, mask: MaskFrame):
     region = multiply(img[mask], 1.0 - ALPHA, casting="unsafe")
     img[mask] = add(region, [0, 0, int(255 * ALPHA)])
+
+
+def draw_detection_boxes(img: ndarray, boxes: Sequence[Sequence[float]]) -> None:
+    """Outline each normalized ``[cx, cy, w, h]`` box on *img*, in place.
+
+    Outlines rather than a filled overlay: a fill would hide the box's extent,
+    and an offset or far too large box is one of the defects the researcher is
+    looking for. The stroke scales with the frame so it stays visible on
+    high-resolution footage without swamping a small subject.
+    """
+    height, width = img.shape[:2]
+    thickness = max(1, round(min(height, width) / 300))
+    for box in boxes:
+        cx, cy, w, h = (float(v) for v in box)
+        x1 = int(round((cx - w / 2) * width))
+        y1 = int(round((cy - h / 2) * height))
+        x2 = int(round((cx + w / 2) * width))
+        y2 = int(round((cy + h / 2) * height))
+        rectangle(img, (x1, y1), (x2, y2), BOX_COLOR, thickness)
 
 
 def main(input_video: Path, output_video: Path):
