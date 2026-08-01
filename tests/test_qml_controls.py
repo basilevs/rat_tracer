@@ -135,6 +135,20 @@ def test_the_frame_index_is_shown(qapp, window):
     assert "0" in _find(window, "frameIndexLabel").property("text")
 
 
+def test_the_slider_stays_inside_a_narrow_window(qapp, window):
+    """Regression: the button row's implicit width used to set the column's
+    minimum, so on a window too narrow for the buttons the slider was stretched
+    with it and its tail ran off the screen -- leaving the researcher unable to
+    seek to the end of the video."""
+    slider = _find(window, "slider_here")
+    window.setProperty("width", 200)
+    qapp.processEvents()
+
+    assert slider.property("x") + slider.property("width") <= window.property("width"), (
+        "the slider runs past the window edge"
+    )
+
+
 def test_the_slider_does_not_take_keyboard_focus(qapp, window):
     """Otherwise Left/Right would move the position by a slider step at the
     same time as the frame-step shortcut moved it by one frame."""

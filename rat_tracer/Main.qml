@@ -103,6 +103,13 @@ ApplicationWindow {
             value: masker.position
         }
         RowLayout {
+            Layout.fillWidth: true
+            // Without an explicit minimum, this row's implicit width becomes the
+            // column's minimum and pushes the fillWidth slider past the window
+            // edge on a narrow window. Zero lets the row overflow on its own
+            // while the slider keeps tracking the window.
+            Layout.minimumWidth: 0
+            clip: true
             Button {
                 text: tr.open_button
                 Layout.alignment: Qt.AlignHCenter
