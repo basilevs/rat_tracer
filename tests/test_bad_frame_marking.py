@@ -130,10 +130,15 @@ def harness(monkeypatch, tmp_path):
             return masker
 
         def pump(self, masker: VideoMasker) -> None:
-            """Run every queued background job, then let renders settle."""
+            """Run every queued background job, then let renders settle.
+
+            The workers live inside the Qt service adapters, which create them
+            on first use -- so a service with no work yet has none.
+            """
             for _ in range(10):
                 ran = False
-                for worker in (masker._detector_worker, masker._storage_worker):
+                for service in (masker._detection, masker._storage):
+                    worker = service._worker
                     if worker is None:
                         continue
                     while True:
