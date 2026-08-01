@@ -550,3 +550,20 @@ def test_clicking_the_ticked_control_removes_the_stored_frame(qapp, harness):
     assert list((harness.root / "images").glob("*.png")) == []
     masker.reset()
     del engine
+
+
+def test_reset_stops_the_workers_it_started(qapp, harness):
+    """``reset()`` runs on ``aboutToQuit``, so it is the last chance to join the
+    background threads. One left running is destroyed while running at
+    interpreter shutdown, which Qt turns into an abort."""
+    masker = harness.open()
+    _enter_problem_mode(masker, harness, 0.5)
+    masker.markBadFrame()
+    harness.pump(masker)
+    assert masker._detection._worker is not None, "sanity check: detection ran"
+    assert masker._storage._worker is not None, "sanity check: storage ran"
+
+    masker.reset()
+
+    assert masker._detection._worker is None, "the detector's thread was left running"
+    assert masker._storage._worker is None, "the storage thread was left running"
