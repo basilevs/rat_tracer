@@ -12,6 +12,7 @@ Helps researcher to find key moments in labyrinth exploration experiment:
 pip install git+https://github.com/basilevs/rat_tracer
 
 # Tracking workflow
+[![Rat Tracer traversal evaluation workflow](https://img.youtube.com/vi/n-PcYGc34LQ/0.jpg)](https://youtu.be/n-PcYGc34LQ)
 
 ## Prerequisites
 - A video recording of an experiment from a static camera
@@ -30,9 +31,6 @@ pip install git+https://github.com/basilevs/rat_tracer
   - complete exploration of a labirinth
 
 The painted track is never erased, so once a goal it painted over, you know to rewind back to find the exact moment it happens.
-
-[![Rat Tracer traversal evaluation workflow](https://img.youtube.com/vi/n-PcYGc34LQ/0.jpg)](https://youtu.be/n-PcYGc34LQ)
-
 
 # Reporting detection failures
 [![Debug detection prediction](debug_detect.png)](https://youtu.be/fvCUo5eGOS0)
