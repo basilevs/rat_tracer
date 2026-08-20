@@ -31,8 +31,11 @@ pip install git+https://github.com/basilevs/rat_tracer
 
 The painted track is never erased, so once a goal it painted over, you know to rewind back to find the exact moment it happens.
 
+[![Rat Tracer traversal evaluation workflow](https://img.youtube.com/vi/n-PcYGc34LQ/0.jpg)](https://youtu.be/n-PcYGc34LQ)
+
+
 # Reporting detection failures
-![Debug detection prediction](debug_detect.png)
+[![Debug detection prediction](debug_detect.png)](https://youtu.be/fvCUo5eGOS0)
 
 The painted track is cumulative, so a red area is the union of everything detected so far — you cannot tell from it whether *this* frame was detected correctly. "Check detection" answers that, and lets you save frames the detector gets wrong so they can be used to improve it later.
 
@@ -57,9 +60,6 @@ Extract the archive and annotate `images/*.png` in YOLO format, placing the labe
     split.py <extracted-dir> data
 
 Each frame has a sidecar in `meta/` recording what the model produced for it (an empty `boxes` list means it detected nothing — a missed detection), which weights produced it, and when it was marked. `index.jsonl` logs every mark and retraction, so `video_key` + `frame_index` identifies frames already ingested in an earlier round, and `marked_at` tells you which are new.
-
-[![Rat Tracer traversal evaluation workflow](https://img.youtube.com/vi/Ybt3lNtIi9M/0.jpg)](https://www.youtube.com/watch?v=Ybt3lNtIi9M)
-
 
 # Training workflow
 The project comes with a set of scripts to train custom object detection models for specific environments and subjects. This part is not user-friendly yet.
