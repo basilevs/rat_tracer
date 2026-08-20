@@ -32,6 +32,7 @@ pip install git+https://github.com/basilevs/rat_tracer
 The painted track is never erased, so once a goal it painted over, you know to rewind back to find the exact moment it happens.
 
 # Reporting detection failures
+![Debug detection prediction](debug_detect.png)
 
 The painted track is cumulative, so a red area is the union of everything detected so far — you cannot tell from it whether *this* frame was detected correctly. "Check detection" answers that, and lets you save frames the detector gets wrong so they can be used to improve it later.
 
