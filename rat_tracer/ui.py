@@ -1,12 +1,14 @@
 import argparse
 import os
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from logging import DEBUG, basicConfig, getLogger
 from pathlib import Path
-from queue import Empty, Queue, ShutDown
 from signal import SIGINT, signal
 from sys import argv, exit
-from time import time
-from typing import TypeVar, override
+from threading import Event, Thread
+from typing import override
 
 import cv2
 from cv2 import VideoCapture
@@ -17,7 +19,6 @@ from PySide6.QtCore import (
     QLocale,
     QObject,
     QSize,
-    QThread,
     QTimer,
     QUrl,
     Signal,
@@ -28,25 +29,13 @@ from PySide6.QtMultimedia import QVideoFrame, QVideoFrameFormat, QVideoSink
 from PySide6.QtQml import QmlElement, QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
-from ultralytics import YOLO
 
-from rat_tracer.bad_frames import (
-    BadFrameStore,
-    Detection,
-    MarkRequest,
-    configure_application_identity,
-)
-from rat_tracer.coverage import CoverageHistory
-from rat_tracer.frame_detector import FrameDetector, YoloFrameDetector
-from rat_tracer.lib import model_path
+from rat_tracer.background import Job
+from rat_tracer.bad_frames import BadFrameStore, configure_application_identity
+from rat_tracer.frame_detector import YoloFrameDetector
 from rat_tracer.mask_render_core import FrameCapture
-from rat_tracer.paint import presence_frames
-from rat_tracer.progress_cache import load_progress, save_progress, video_key
 from rat_tracer.translations import resolve_translations
 from rat_tracer.video_review import ReviewListener, VideoReview
-
-T = TypeVar("T")
-
 
 logger = getLogger(__name__)
 logger.setLevel(DEBUG)
@@ -58,281 +47,108 @@ QML_IMPORT_NAME = "MyBackend"
 QML_IMPORT_MAJOR_VERSION = 1
 
 
-class CoverageComputer(QThread):
-    frameReady = Signal()
+class _FutureJob:
+    """A :class:`~rat_tracer.background.Job` backed by a ``Future``."""
 
-    def __init__(self, history: CoverageHistory, video: Path, parent=None):
+    def __init__(self, future: Future):
+        self._future = future
+
+    def cancel(self) -> bool:
+        return self._future.cancel()
+
+
+class QtBackgroundExecutor(QObject):
+    """The application's :class:`~rat_tracer.background.BackgroundExecutor`.
+
+    One worker thread, so the review's jobs stay in submission order: a mark and
+    its retraction must not interleave into a state where the files and the
+    index disagree, and a stale detection must not overwrite a fresh one.
+    Completions are handed back to the GUI thread through a queued signal, which
+    is what lets the review stay a single-threaded object.
+
+    A ``ThreadPoolExecutor`` rather than a ``QThread``: Python joins its workers
+    at interpreter exit, whereas a ``QThread`` still parked on its queue there is
+    destroyed while running, which Qt treats as fatal and turns into an abort.
+    """
+
+    #: Carries a completion from the worker thread to this object's thread.
+    #: Emitting is thread-safe, and the auto-connection queues it.
+    _completed = Signal(object)
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._history = history
-        self._video = video
-        self._key = video_key(video)
+        # Created on first use, so an application that only ever watches a video
+        # never starts a thread at all.
+        self._pool: ThreadPoolExecutor | None = None
+        self._completed.connect(self._run_completion)
 
-    @property
-    def key(self) -> str:
-        """The video's content fingerprint, already paid for by the cache.
+    def _ensure(self) -> ThreadPoolExecutor:
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="review")
+        return self._pool
 
-        Marked frames are keyed by it too, so the same physical video marked
-        from different paths or machines deduplicates.
-        """
-        return self._key
-
-    def run(self):
-        start = time()
-        logger.info("Processing video: %s", self._video)
-        loaded = load_progress(self._key)
-        if loaded is not None:
-            self._history.replace_with(loaded)
-            self.frameReady.emit()
-        start_frame = len(self._history)
-        logger.info("Starting from frame %d", start_frame)
-        for _, mask in presence_frames(
-            self._video, model=YOLO(model_path()), start_frame=start_frame
-        ):
-            self._history.append(mask)
-            if self.isInterruptionRequested():
-                save_progress(self._history, self._key)
+    def submit[T](
+        self,
+        work: Callable[[], T],
+        on_done: Callable[[T], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> Job:
+        def run() -> None:
+            try:
+                result = work()
+            except Exception as error:
+                # A failed job must never take the thread down with it: the
+                # researcher keeps navigating and the next job still runs.
+                logger.exception("background job failed")
+                if on_error is not None:
+                    self._completed.emit(partial(on_error, error))
                 return
-            self.frameReady.emit()
-        else:
-            self.frameReady.emit()
-        save_progress(self._history, self._key)
-        logger.info("Finished processing video: %s in %.2f seconds", self._video, time() - start)
+            if on_done is not None:
+                self._completed.emit(partial(on_done, result))
 
+        return _FutureJob(self._ensure().submit(run))
 
-class _Worker(QThread):
-    """A thread that runs queued jobs one at a time until it is stopped.
-
-    Both background jobs in problem reporting mode -- inference and saving --
-    must stay off the UI thread and must stay ordered with respect to
-    themselves: a mark and its undo cannot be allowed to interleave, and a
-    stale detection must not overwrite a fresh one.
-    """
-
-    #: Whether ``stop`` abandons jobs that are still queued. Work whose result
-    #: is worthless once the video is closed says yes; work that must not be
-    #: lost says no and is drained first.
-    discards_queued_jobs = False
-
-    def __init__(self, name: str, parent=None):
-        super().__init__(parent)
-        self._queue: Queue = Queue()
-        self._log = logger.getChild(name)
-
-    def submit(self, job) -> None:
-        try:
-            self._queue.put(job)
-        except ShutDown:
-            # Raced with teardown: the thread is on its way out and nothing is
-            # left to run this.
-            self._log.debug("dropping a job submitted after shutdown")
+    @Slot(object)
+    def _run_completion(self, completion: Callable[[], None]) -> None:
+        completion()
 
     def stop(self) -> None:
-        self._queue.shutdown(immediate=self.discards_queued_jobs)
+        """Finish what is queued, then join the worker.
 
-    def _drain(self, job):
-        """Hook for workers that only care about the most recent job."""
-        return job
-
-    def run(self):
-        self._startup()
-        while True:
-            try:
-                job = self._queue.get()
-            except ShutDown:
-                self._log.debug("stopping")
-                return
-            job = self._drain(job)
-            if job is None:
-                continue
-            self.run_job(job)
-
-    def run_job(self, job) -> None:
-        """Run one job, absorbing its failure.
-
-        A failed job must never take the thread down with it: the researcher
-        keeps navigating, and the next job still runs. Public so tests can
-        drive the queue without a real thread and still exercise this.
+        Queued work is drained rather than dropped. A detection nobody will look
+        at costs a moment; an abandoned write loses the observation, which is the
+        only copy there is.
         """
-        try:
-            job()
-        except Exception:
-            self._log.exception("job failed")
-
-    def _startup(self) -> None:
-        pass
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=True)
 
 
-class FrameDetectionWorker(_Worker):
-    """Runs on-demand detection for whichever frame is being looked at."""
+class CoveragePass:
+    """Runs the cumulative pass over one video, on a thread of its own.
 
-    detectionReady = Signal(int, object)
-    detectionFailed = Signal(int)
-
-    # A detection is only interesting for a frame the researcher is looking at,
-    # so anything still queued when the video closes is already worthless.
-    discards_queued_jobs = True
-
-    def __init__(self, detector: FrameDetector, parent=None):
-        super().__init__("detector", parent)
-        self._detector = detector
-
-    def _startup(self) -> None:
-        # The first inference in a process costs seconds while later ones cost
-        # a fraction of one. Paying it here keeps it off the first frame the
-        # researcher judges.
-        self._detector.prewarm()
-
-    def _drain(self, job):
-        """Keep only the newest request.
-
-        Seeking produces requests faster than inference answers them, and the
-        researcher is looking at the newest frame -- so older ones are dropped
-        rather than queued. A dropped frame is re-requested if they come back.
-        """
-        while True:
-            try:
-                newer = self._queue.get_nowait()
-            except Empty:
-                return job
-            except ShutDown:
-                # Teardown began while requests were still stacked up; let the
-                # main loop see the shutdown rather than running one more.
-                return None
-            job = newer
-
-    def request(self, frame_index: int, image: ndarray) -> None:
-        def job():
-            detection = self._detector.detect(image)
-            self.detectionReady.emit(frame_index, detection)
-
-        def guarded():
-            try:
-                job()
-            except Exception:
-                self.detectionFailed.emit(frame_index)
-                raise
-
-        self.submit(guarded)
-
-    @property
-    def model_id(self) -> str:
-        return self._detector.model_id
-
-
-class MarkStorageWorker(_Worker):
-    """Writes and deletes marked frames without blocking defect hunting."""
-
-    markSaved = Signal(int)
-    markFailed = Signal(int)
-    markRetracted = Signal(int)
-
-    def __init__(self, store: BadFrameStore, parent=None):
-        super().__init__("storage", parent)
-        self._store = store
-
-    def mark(self, request: MarkRequest) -> None:
-        def job():
-            try:
-                self._store.mark(request)
-            except Exception:
-                # Surfaced to the researcher as "not saved"; the application
-                # keeps running and their position is untouched.
-                self.markFailed.emit(request.frame_index)
-                raise
-            self.markSaved.emit(request.frame_index)
-
-        self.submit(job)
-
-    def retract(self, video_key_value: str, frame_index: int, video_stem: str) -> None:
-        def job():
-            self._store.retract(video_key_value, frame_index, video_stem)
-            self.markRetracted.emit(frame_index)
-
-        self.submit(job)
-
-
-class QtDetectionService:
-    """Runs detection on a worker thread, for the review to ask.
-
-    Owns the thread's whole life: the review holds one of these for as long as
-    it exists, while the thread underneath is created on first use and replaced
-    after a video is closed.
+    Not on the shared executor: this lasts as long as the video does, and a
+    serial executor running it would starve every detection and every write
+    behind it. A plain ``Thread`` because nothing in the pass needs Qt -- what it
+    runs is one blocking call into the review.
     """
 
-    def __init__(self, on_ready, on_failed):
-        self._on_ready = on_ready
-        self._on_failed = on_failed
-        self._worker: FrameDetectionWorker | None = None
+    def __init__(self, review: VideoReview):
+        self._review = review
+        self._interrupted = Event()
+        self._thread = Thread(target=self._run, name="coverage-pass", daemon=True)
 
-    def _ensure(self) -> FrameDetectionWorker:
-        if self._worker is None:
-            worker = FrameDetectionWorker(YoloFrameDetector())
-            worker.detectionReady.connect(self._on_ready)
-            worker.detectionFailed.connect(self._on_failed)
-            self._worker = worker
-            worker.start()
-        return self._worker
+    def start(self) -> None:
+        self._thread.start()
 
-    @property
-    def model_id(self) -> str:
-        return self._ensure().model_id
-
-    def request(self, frame_index: int, image: ndarray) -> None:
-        self._ensure().request(frame_index, image)
+    def _run(self) -> None:
+        self._review.process_video(self._interrupted.is_set)
 
     def stop(self) -> None:
-        if self._worker is not None:
-            self._worker.stop()
-            self._worker.wait()
-            self._worker = None
-
-
-class QtMarkStorage:
-    """Writes and removes marked frames on a worker thread.
-
-    ``is_marked`` answers immediately from the store, because the control shows
-    whether the frame on screen is stored every time the researcher moves.
-    """
-
-    def __init__(self, on_stored, on_failed, on_removed):
-        self._on_stored = on_stored
-        self._on_failed = on_failed
-        self._on_removed = on_removed
-        self._store: BadFrameStore | None = None
-        self._worker: MarkStorageWorker | None = None
-
-    def _ensure_store(self) -> BadFrameStore:
-        # Opened on first use so that resolving the storage directory -- and
-        # replaying its index -- is not paid by an application that never marks
-        # anything.
-        if self._store is None:
-            self._store = BadFrameStore()
-        return self._store
-
-    def _ensure(self) -> MarkStorageWorker:
-        if self._worker is None:
-            worker = MarkStorageWorker(self._ensure_store())
-            worker.markSaved.connect(self._on_stored)
-            worker.markFailed.connect(self._on_failed)
-            worker.markRetracted.connect(self._on_removed)
-            self._worker = worker
-            worker.start()
-        return self._worker
-
-    def is_marked(self, video_key: str, frame_index: int) -> bool:
-        return self._ensure_store().is_marked(video_key, frame_index)
-
-    def store(self, request: MarkRequest) -> None:
-        self._ensure().mark(request)
-
-    def remove(self, video_key: str, frame_index: int, video_stem: str) -> None:
-        self._ensure().retract(video_key, frame_index, video_stem)
-
-    def stop(self) -> None:
-        if self._worker is not None:
-            self._worker.stop()
-            self._worker.wait()
-            self._worker = None
+        """Ask the pass to save where it got to, and wait until it has."""
+        self._interrupted.set()
+        if self._thread.is_alive():
+            self._thread.join()
 
 
 @QmlElement
@@ -340,10 +156,12 @@ class VideoMasker(QObject):
     """Qt's half of the application: properties, signals, timers and threads.
 
     Every decision belongs to :class:`~rat_tracer.video_review.VideoReview`,
-    which this class drives and reports completions to. What is left here is
-    the part that genuinely needs Qt -- exposing state to QML, scheduling a
-    render on the event loop, running detection and storage on threads, and
-    turning an image into a ``QVideoFrame``.
+    which this class drives. What is left here is the part that genuinely needs
+    Qt -- exposing state to QML, scheduling a render on the event loop, giving
+    the review threads to work on, and turning an image into a ``QVideoFrame``.
+
+    The review reports back through one callback, so the fan-out to Qt's several
+    notifications happens in :meth:`_apply_review_changed` and nowhere else.
     """
 
     # 1. Define a signal to notify QML when the property changes
@@ -355,61 +173,37 @@ class VideoMasker(QObject):
     mark_saved = Signal(int)
     #: Emitted with the frame index when a mark could *not* be stored.
     mark_failed = Signal(int)
+    #: Internal. The review's own notification, hopped onto this object's
+    #: thread: it also arrives from the cumulative pass, and everything below
+    #: -- QML property notifies, ``QTimer`` -- belongs to the GUI thread.
+    _review_changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Named handlers rather than lambdas over ``self._review``: the
-        # services are built before it exists, and each of these is a one-line
-        # relay from a worker's signal into the review.
-        self._detection = QtDetectionService(
-            on_ready=self._detection_ready,
-            on_failed=self._detection_failed,
-        )
-        self._storage = QtMarkStorage(
-            on_stored=self._mark_stored,
-            on_failed=self._mark_failed,
-            on_removed=self._mark_removed,
-        )
+        self._review_changed.connect(self._apply_review_changed)
+        self._executor = QtBackgroundExecutor(self)
         self._review = VideoReview(
             listener=ReviewListener(
-                schedule_render=self._schedule_render,
-                state_changed=self._on_state_changed,
+                changed=self._review_changed.emit,
                 mark_stored=self.mark_saved.emit,
                 mark_failed=self.mark_failed.emit,
             ),
-            storage=self._storage,
-            detection=self._detection,
+            executor=self._executor,
+            detector=YoloFrameDetector(),
+            store=BadFrameStore(),
         )
         self._video = None
         self._cap = None
-        self._thread_connection = None
-        self._thread = None
+        self._pass: CoveragePass | None = None
         self._video_output = None
         self._video_sink = QVideoSink()
         self._strings = resolve_translations(QLocale.system().name())
         masker_logger.debug("__init__: VideoMasker initialized")
 
-    @Slot(int, object)
-    def _detection_ready(self, frame_index: int, detection: Detection) -> None:
-        self._review.detection_ready(frame_index, detection)
-
-    @Slot(int)
-    def _detection_failed(self, frame_index: int) -> None:
-        self._review.detection_failed(frame_index)
-
-    @Slot(int)
-    def _mark_stored(self, frame_index: int) -> None:
-        self._review.mark_stored(frame_index)
-
-    @Slot(int)
-    def _mark_failed(self, frame_index: int) -> None:
-        self._review.mark_failed(frame_index)
-
-    @Slot(int)
-    def _mark_removed(self, frame_index: int) -> None:
-        self._review.mark_removed(frame_index)
-
-    def _on_state_changed(self) -> None:
+    @Slot()
+    def _apply_review_changed(self) -> None:
+        """Turn the review's one notification into Qt's several."""
+        self._schedule_render()
         self.mark_state_changed.emit()
         self.problem_mode_changed.emit(self._review.problem_mode)
 
@@ -448,11 +242,9 @@ class VideoMasker(QObject):
                 return frame
 
         self._cap = cap
-        t = CoverageComputer(self._review.history, self._video)
-        self._thread = t
-        self._review.open_video(FrameCaptureAdapter(), self._video, t.key)
-        self._thread_connection = t.frameReady.connect(self._on_frame_ready)
-        t.start()
+        self._review.open_video(FrameCaptureAdapter(), self._video)
+        self._pass = CoveragePass(self._review)
+        self._pass.start()
 
     video = Property(str, _get_video, _set_video, notify=video_changed)
 
@@ -463,11 +255,6 @@ class VideoMasker(QObject):
         local_path = url.toLocalFile()
         if local_path:
             self.video = local_path  # type: ignore[assignment]  # PySide Property setter
-
-    @Slot()
-    def _on_frame_ready(self):
-        masker_logger.debug("_on_frame_ready")
-        self._review.frame_processed()
 
     def _get_video_output(self) -> QObject:
         masker_logger.debug("_get_video_output: %s", self._video_output)
@@ -483,28 +270,27 @@ class VideoMasker(QObject):
             if not sink:
                 raise ValueError("video_output must be a QVideoSink or contain one as a child")
             self._video_sink = sink
-        self._on_frame_ready()
+        # There is somewhere to draw now, which may be all that was missing.
+        self._schedule_render()
 
     video_output = Property(QObject, _get_video_output, _set_video_output)
 
     @Slot()
     def reset(self):
         masker_logger.debug("reset: resetting VideoMasker")
-        t = self._thread
-        if t:
-            t.frameReady.disconnect(self._thread_connection)
-            t.requestInterruption()
-            t.wait()
-        self._thread = None
-        # Every thread this object started has to be joined here, not just the
-        # cumulative pass: reset() is what ``aboutToQuit`` runs, and a worker
-        # still parked on its queue at interpreter shutdown is destroyed while
-        # running, which Qt treats as fatal and aborts the process.
-        self._detection.stop()
-        self._storage.stop()
+        current_pass = self._pass
+        if current_pass is not None:
+            current_pass.stop()
+        self._pass = None
         self._video = None
         self._cap = None
+        # Closing first abandons the outstanding detection, whose answer nobody
+        # is going to look at; stopping then finishes the writes queued behind
+        # it. Every thread this object started is joined here, not just the
+        # pass: reset() is what ``aboutToQuit`` runs, so it is the last chance
+        # to finish a write, and a dropped one loses the only copy there is.
         self._review.close_video()
+        self._executor.stop()
         self._emit_frame(QVideoFrame())
 
     def _get_playing(self) -> bool:
@@ -550,6 +336,10 @@ class VideoMasker(QObject):
         )
         self._emit_frame(frame)
         self.position_changed.emit(self._review.position)
+        # A render is what can make a frame judgeable -- the detection it was
+        # waiting for is drawn now -- and the review does not report its own
+        # renders, so the control is refreshed here.
+        self.mark_state_changed.emit()
 
     def _get_problem_mode(self) -> bool:
         return self._review.problem_mode
@@ -572,14 +362,6 @@ class VideoMasker(QObject):
     def toggleMark(self) -> None:
         """Store the frame on screen, or withdraw it if it is already stored."""
         self._review.toggle_mark()
-
-    @Slot()
-    def markBadFrame(self) -> None:
-        self._review.mark()
-
-    @Slot()
-    def unmarkFrame(self) -> None:
-        self._review.unmark()
 
     @Slot()
     def undoLastMark(self) -> None:

@@ -73,8 +73,14 @@ class _FakeMode:
 
 
 def _open(core: MaskRenderCore, cap: _FakeCapture) -> None:
-    """Open a video the way a review does, identity included."""
-    core.open(cap, _VIDEO, _KEY)
+    """Open a video the way a review does, identity included.
+
+    The fingerprint arrives separately in production -- the cumulative pass
+    computes it on its own thread -- but every test here wants a fully named
+    video, so it is applied at once.
+    """
+    core.open(cap, _VIDEO)
+    core.identify(_KEY)
 
 
 def _append_mask(core: MaskRenderCore) -> None:
@@ -86,9 +92,9 @@ def test_seek_while_uncached_video_processes_then_mask_applies():
     then re-renders with the mask once the background pass reaches that
     frame -- mirrors test_video_masker's uncached-video scenario."""
     core = MaskRenderCore()
-    core.mode = CoverageMode(core.history)
+    core.adopt_mode(CoverageMode(core.history))
     _open(core, _FakeCapture(total_frames=10))
-    core.playing = False
+    core.set_playing(False)
 
     assert core.set_position(0.55)  # frame index 5 of 10
     outcome = core.render_now()
@@ -116,9 +122,9 @@ def test_reset_clears_the_overlay_flag_for_the_next_video():
     completed overlay, or the paused branch never re-renders
     (see rat_tracer.ui.VideoMasker.reset -- ebd5674 fixed this)."""
     core = MaskRenderCore()
-    core.mode = CoverageMode(core.history)
+    core.adopt_mode(CoverageMode(core.history))
     _open(core, _FakeCapture(total_frames=10))
-    core.playing = False
+    core.set_playing(False)
     core.set_position(0.55)
     core.render_now()
     for _ in range(10):
@@ -129,6 +135,7 @@ def test_reset_clears_the_overlay_flag_for_the_next_video():
 
     core.reset()
     assert not core.overlay_complete, "reset() must clear the stale flag from video1"
+    assert core.video_key is None, "video1's identity must not be inherited either"
 
     _open(core, _FakeCapture(total_frames=6))
     for _ in range(6):
@@ -147,13 +154,33 @@ def test_reset_clears_the_overlay_flag_for_the_next_video():
     assert core.overlay_complete
 
 
+def test_reset_lets_the_next_video_be_seeked_to_the_same_position():
+    """The other half of the same bug: ``reset()`` used to clear the *applied*
+    position and leave the *requested* one, so opening a second video and
+    seeking to wherever the first was left looked like no seek at all -- and a
+    seek that schedules nothing never repaints."""
+    core = MaskRenderCore(mode=_FakeMode())
+    _open(core, _FakeCapture(total_frames=10))
+    core.set_playing(False)
+    assert core.set_position(0.55)
+    core.render_now()
+
+    core.reset()
+    _open(core, _FakeCapture(total_frames=10))
+    core.set_playing(False)
+
+    assert core.set_position(0.55), (
+        "the position video1 was left at must still count as a seek in video2"
+    )
+
+
 # --- the active mode --------------------------------------------------------
 
 
 def test_the_frame_is_handed_to_the_active_mode_to_draw():
     core = MaskRenderCore(mode=_FakeMode(paint=7))
     _open(core, _FakeCapture(total_frames=10))
-    core.playing = False
+    core.set_playing(False)
 
     core.set_position(0.5)
     outcome = core.render_now()
@@ -166,7 +193,7 @@ def test_the_frame_is_handed_to_the_active_mode_to_draw():
 def test_an_incomplete_overlay_leaves_the_core_expecting_a_repaint():
     core = MaskRenderCore(mode=_FakeMode(complete=False))
     _open(core, _FakeCapture(total_frames=10))
-    core.playing = False
+    core.set_playing(False)
     core.set_position(0.5)
 
     core.render_now()
@@ -178,7 +205,7 @@ def test_switching_mode_tells_both_modes_and_forces_a_repaint():
     first, second = _FakeMode(paint=1), _FakeMode(paint=2)
     core = MaskRenderCore(mode=first)
     _open(core, _FakeCapture(total_frames=10))
-    core.playing = False
+    core.set_playing(False)
     core.set_position(0.5)
     core.render_now()
 
@@ -207,7 +234,7 @@ def test_the_raw_frame_is_kept_before_the_mode_draws_on_it():
     training data."""
     core = MaskRenderCore(mode=_FakeMode(paint=255))
     _open(core, _FakeCapture(total_frames=100))
-    core.playing = False
+    core.set_playing(False)
     core.set_position(0.5)
 
     outcome = core.render_now()
@@ -224,7 +251,7 @@ def test_the_raw_frame_is_kept_before_the_mode_draws_on_it():
 def test_frame_index_and_timestamp_come_from_the_position():
     core = MaskRenderCore()
     _open(core, _FakeCapture(total_frames=1000))  # 25 fps
-    core.playing = False
+    core.set_playing(False)
     core.set_position(0.5)
 
     assert core.current_frame_index == 500
@@ -249,7 +276,7 @@ def test_the_last_frame_is_reachable_and_never_out_of_range():
 def test_stepping_moves_exactly_one_frame_and_stops_at_the_ends():
     core = MaskRenderCore()
     _open(core, _FakeCapture(total_frames=10))
-    core.playing = False
+    core.set_playing(False)
     core.set_position(core.frame_index_to_position(5))
 
     forward = core.step_frame(1)

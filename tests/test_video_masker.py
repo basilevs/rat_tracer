@@ -39,10 +39,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import cv2
 import numpy as np
 import pytest
-from PySide6.QtCore import QThread, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QVideoSink
 from rat_tracer import ui as ui_module
+from rat_tracer import video_review as review_module
+from rat_tracer.bad_frames import STORAGE_ENV_VAR
+from rat_tracer.coverage import CoverageHistory
 from rat_tracer.ui import VideoMasker
 
 _H, _W = 8, 12
@@ -96,30 +99,30 @@ def qapp():
 
 
 @pytest.fixture
-def worker_harness(monkeypatch):
-    """Fake the heavy collaborators ``CoverageComputer.run`` drives.
+def worker_harness(monkeypatch, tmp_path):
+    """Fake the heavy collaborators ``VideoReview.process_video`` drives.
 
     Replaces ``cv2.VideoCapture``, the YOLO model, ``presence_frames`` and the
     disk-backed progress cache with fast, in-memory fakes, and makes
-    ``QThread.start``/``QTimer.singleShot`` run their callback inline instead
-    of deferring to a real thread or the event loop. This lets a test drive
-    ``VideoMasker`` purely through its public properties/slots while keeping
-    execution order fully deterministic.
+    ``CoveragePass.start``/``QTimer.singleShot`` run their callback inline
+    instead of deferring to a real thread or the event loop. This lets a test
+    drive ``VideoMasker`` purely through its public properties/slots while
+    keeping execution order fully deterministic.
 
-    Caveat: ``frameReady.connect(self._on_frame_ready)`` uses Qt's default
-    ``AutoConnection``, which resolves to a *queued* cross-thread call in
-    production (the worker thread emits, the main thread's event loop
-    delivers it later) but to a *direct*, synchronous call here, since
-    patching ``start`` to run inline means emitter and receiver share a
-    thread. So `_on_frame_ready` ends up invoked reentrantly, nested inside
-    the very call stack that triggered it, instead of on a fresh stack
-    dispatched later by the event loop. Exact interleavings/frame-counts
-    below are therefore illustrative of the code's *logic*, not a timing
-    prediction of production behavior. This is fine for state-based bugs
-    (e.g. the stale ``mask_rendered`` flag below doesn't care which thread or
-    stack frame observes it) but wouldn't catch a bug that only manifests
-    through genuine queued-delivery timing.
+    Caveat: the review reports progress through ``VideoMasker._review_changed``,
+    whose default ``AutoConnection`` resolves to a *queued* cross-thread call in
+    production (the pass's thread emits, the main thread's event loop delivers
+    it later) but to a *direct*, synchronous call here, since running the pass
+    inline means emitter and receiver share a thread. So the render ends up
+    invoked reentrantly, nested inside the very call stack that triggered it,
+    instead of on a fresh stack dispatched later by the event loop. Exact
+    interleavings/frame-counts below are therefore illustrative of the code's
+    *logic*, not a timing prediction of production behavior. This is fine for
+    state-based bugs (e.g. the stale overlay flag below doesn't care which
+    thread or stack frame observes it) but wouldn't catch a bug that only
+    manifests through genuine queued-delivery timing.
     """
+    monkeypatch.setenv(STORAGE_ENV_VAR, str(tmp_path / "bad_frames"))
     frame_counts: dict[str, int] = {}
     cache_store: dict[str, object] = {}
     mid_stream_hooks: dict[str, Callable[[], None]] = {}
@@ -137,20 +140,20 @@ def worker_harness(monkeypatch):
             yield None, np.zeros((_H, _W), dtype=bool)
 
     monkeypatch.setattr(ui_module, "VideoCapture", fake_video_capture)
-    monkeypatch.setattr(ui_module, "video_key", lambda path: str(path))
-    monkeypatch.setattr(ui_module, "YOLO", lambda *a, **k: None)
-    monkeypatch.setattr(ui_module, "model_path", lambda: Path("fake-model.pt"))
-    monkeypatch.setattr(ui_module, "presence_frames", fake_presence_frames)
-    monkeypatch.setattr(ui_module, "load_progress", cache_store.get)
+    monkeypatch.setattr(review_module, "video_key", lambda path: str(path))
+    monkeypatch.setattr(review_module, "YOLO", lambda *a, **k: None)
+    monkeypatch.setattr(review_module, "model_path", lambda: Path("fake-model.pt"))
+    monkeypatch.setattr(review_module, "presence_frames", fake_presence_frames)
+    monkeypatch.setattr(review_module, "load_progress", cache_store.get)
     monkeypatch.setattr(
-        ui_module,
+        review_module,
         "save_progress",
         # Snapshot via a pickle round-trip, like the real disk-backed cache: a
         # stored reference to the live CoverageHistory would let later mutations
         # (e.g. reset()'s clear()) silently corrupt what was "saved".
         lambda history, key: cache_store.__setitem__(key, pickle.loads(pickle.dumps(history))),
     )
-    monkeypatch.setattr(QThread, "start", lambda self, priority=None: self.run())
+    monkeypatch.setattr(ui_module.CoveragePass, "start", lambda self: self._run())
     monkeypatch.setattr(QTimer, "singleShot", staticmethod(lambda _msec, cb: cb()))
 
     class Harness:
@@ -165,7 +168,7 @@ def worker_harness(monkeypatch):
         def seed_cache(self, path: str, total_frames: int):
             """Pre-populate the progress cache as if *path* were already
             fully processed in a previous run."""
-            history = ui_module.CoverageHistory()
+            history = CoverageHistory()
             for _ in range(total_frames):
                 history.append(np.zeros((_H, _W), dtype=bool))
             cache_store[path] = history

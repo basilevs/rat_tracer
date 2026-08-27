@@ -9,6 +9,12 @@ and the index and timestamp that name it. *What* is drawn over it belongs to
 the active mode (:mod:`rat_tracer.review_modes`), which this asks rather than
 decides -- so adding a way of looking at the video does not touch this file,
 and this file has no opinion about which way is in use.
+
+The state behind all of that is private. Whether a render is due is decided
+here, from flags that only :meth:`MaskRenderCore.render_now` may clear, and an
+outside assignment to any of them silently costs a repaint; what callers get
+instead are the questions they actually ask -- :attr:`~MaskRenderCore.position`,
+:attr:`~MaskRenderCore.raw_frame`, :attr:`~MaskRenderCore.showing_judged_frame`.
 """
 
 from dataclasses import dataclass
@@ -56,56 +62,144 @@ class MaskRenderCore:
     """Decides what is shown, and what may be marked, as the pass progresses."""
 
     def __init__(self, mode: ReviewMode | None = None) -> None:
-        #: The active way of looking at the video. Set by the session; this
-        #: class never chooses one.
-        self.mode = mode
-        self.video_path: Path | None = None
-        self.video_key: str | None = None
-        self.history = CoverageHistory()
-        self.position = 0.0
-        self.playing = True
-        self.cap: FrameCapture | None = None
-        self.total_frame_count = 0.0
-        self.frame_count = 0
-        #: Whether the active mode drew everything it currently has. False
-        #: means something is still outstanding -- an unprocessed frame, a
-        #: detection not back yet -- and a repaint is due when it arrives.
-        self.overlay_complete = False
+        # Outlives every video: the modes are built around this one object, so
+        # closing a video clears it rather than replacing it.
+        self._history = CoverageHistory()
+        self._mode = mode
+        self._clear()
+
+    def _clear(self) -> None:
+        """Put everything a video owns back to its opening value.
+
+        One place, used by both ``__init__`` and :meth:`reset`, because the
+        fields that matter most here are the ones easiest to forget: the
+        pending-render flags decide whether the *next* video gets its first
+        repaint at all, and a stale ``_pending_position`` makes a seek to the
+        position the last video was left at look like no seek at all.
+        """
+        self._video_path: Path | None = None
+        self._video_key: str | None = None
+        self._cap: FrameCapture | None = None
+        self._total_frames = 0
+        self._fps = 0.0
+        self._position = 0.0
         self._pending_position: float | None = None
         self._render_pending = False
-        self.position_seconds = 0.0
-        self.fps = 0.0
+        self._force_render = False
+        self._playing = True
         # The frame as decoded, before the mode drew on it. Every overlay
         # mutates in place, and a marked frame must be stored raw -- annotated
         # pixels are unusable as training data (FR-12).
-        self.raw_frame: ndarray | None = None
-        self.rendered_frame_index: int | None = None
-        self._force_render = False
+        self._raw_frame: ndarray | None = None
+        self._rendered_frame_index: int | None = None
+        # Whether the active mode drew everything it currently has. False means
+        # something is still outstanding -- an unprocessed frame, a detection
+        # not back yet -- and a repaint is due when it arrives.
+        self._overlay_complete = False
 
     def reset(self) -> None:
-        self.history.clear()
-        self.overlay_complete = False
-        self.position = 0.0
-        self.cap = None
-        self.video_path = None
-        self.video_key = None
-        self.total_frame_count = 0.0
-        self.fps = 0.0
-        self.raw_frame = None
-        self.rendered_frame_index = None
+        self._history.clear()
+        self._clear()
 
-    def open(self, cap: FrameCapture, video_path: Path, video_key: str) -> None:
-        self.cap = cap
-        self.video_path = video_path
-        self.video_key = video_key
-        self.total_frame_count = cap.frame_count()
-        self.fps = cap.fps()
-        if self.fps <= 0:
+    def open(self, cap: FrameCapture, video_path: Path) -> None:
+        self._cap = cap
+        self._video_path = video_path
+        self._total_frames = int(cap.frame_count())
+        self._fps = cap.fps()
+        if self._fps <= 0:
             logger.warning("Video reports no frame rate; timestamps will read 00:00:00")
+
+    def identify(self, video_key: str) -> None:
+        """Name the open video by its content fingerprint.
+
+        Separate from :meth:`open` because the fingerprint costs a full read of
+        the file, so it is paid by the cumulative pass on its own thread rather
+        than by whoever opened the video. Until it lands nothing can be marked,
+        since a mark is stored under this key. Assigning one reference is all
+        that crosses the thread boundary.
+        """
+        self._video_key = video_key
+
+    # --- what is being looked at --------------------------------------------
+
+    @property
+    def history(self) -> CoverageHistory:
+        """The cumulative track, which the pass appends to as it runs."""
+        return self._history
+
+    @property
+    def mode(self) -> ReviewMode | None:
+        return self._mode
+
+    @property
+    def video_open(self) -> bool:
+        return self._cap is not None
+
+    @property
+    def video_path(self) -> Path | None:
+        return self._video_path
+
+    @property
+    def video_key(self) -> str | None:
+        return self._video_key
+
+    @property
+    def total_frames(self) -> int:
+        return self._total_frames
+
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    @property
+    def position(self) -> float:
+        """Where the frame on screen is, as a fraction of the video."""
+        return self._position
+
+    @property
+    def raw_frame(self) -> ndarray | None:
+        """The displayed frame as decoded, before the mode drew on it."""
+        return self._raw_frame
+
+    @property
+    def rendered_frame_index(self) -> int | None:
+        return self._rendered_frame_index
+
+    @property
+    def overlay_complete(self) -> bool:
+        return self._overlay_complete
+
+    @property
+    def showing_judged_frame(self) -> bool:
+        """Whether the active mode's full answer for the current frame is up.
+
+        True only while stopped on a frame that has been drawn with nothing
+        outstanding. Problem reporting mode marks on this, which is why every
+        stored mark is something the researcher actually looked at and no
+        metadata field has to assert it.
+        """
+        return (
+            self._cap is not None
+            and not self._playing
+            and self._rendered_frame_index == self.current_frame_index
+            and self._overlay_complete
+        )
+
+    # --- what changes it ----------------------------------------------------
+
+    def adopt_mode(self, mode: ReviewMode) -> None:
+        """Set the opening mode, with none of :meth:`set_mode`'s consequences.
+
+        For construction only, before there is a video or a frame on screen:
+        there is no previous mode to leave and nothing to force a repaint of.
+        Going through ``set_mode`` there would leave a render already marked as
+        pending, which swallows the first real one.
+        """
+        self._mode = mode
 
     def set_playing(self, value: bool) -> bool:
         """Returns True if the caller should schedule a render now."""
-        self.playing = value
+        self._playing = value
         return self.frame_ready()
 
     def set_mode(self, mode: ReviewMode) -> bool:
@@ -115,11 +209,11 @@ class MaskRenderCore:
         mode changes only what is drawn over the frame -- the recorded coverage
         is untouched, so going back brings the track return with nothing lost.
         """
-        if mode is self.mode:
+        if mode is self._mode:
             return False
-        if self.mode is not None:
-            self.mode.left()
-        self.mode = mode
+        if self._mode is not None:
+            self._mode.left()
+        self._mode = mode
         mode.entered()
         # The frame on screen was drawn for the other mode, and neither the
         # position nor the coverage has changed -- so ask for a repaint
@@ -127,30 +221,43 @@ class MaskRenderCore:
         self._force_render = True
         return self._schedule_render()
 
-    def frame_ready(self) -> bool:
-        """Call whenever the background pass appends a frame (or playing/
-        video-output changes). Returns True if the caller should schedule a
-        render now."""
-        total = self.total_frame_count
-        if total == 0:
-            logger.debug("frame_ready: no frames yet (total=0)")
+    def _processed_position(self) -> float:
+        return float(len(self._history) - 1) / self._total_frames
+
+    @property
+    def repaint_due(self) -> bool:
+        """Whether the pass has produced something the screen is not showing.
+
+        Reads state without touching it, so the pass's own thread may ask it
+        directly and only wake the UI when the answer is yes. Applying the
+        answer is :meth:`frame_ready`'s job, on the thread that owns this.
+        """
+        if self._total_frames == 0:
             return False
-        last_frame = len(self.history) - 1
-        processed_position = float(last_frame) / total
+        processed = self._processed_position()
+        if self._playing:
+            return self._cap is not None and self._pending_position != processed
+        return not self._overlay_complete and self._position < processed
+
+    def frame_ready(self) -> bool:
+        """Fold the pass's progress into the render decision.
+
+        Returns True if the caller should schedule a render now. Playback is
+        this too: playing means following the processed frontier, so a frame
+        appended by the pass is what advances the position.
+        """
         logger.debug(
             "frame_ready: %d/%d, playing: %s, overlay_complete: %s",
-            last_frame,
-            total,
-            self.playing,
-            self.overlay_complete,
+            len(self._history) - 1,
+            self._total_frames,
+            self._playing,
+            self._overlay_complete,
         )
-        if self.playing:
-            if self.cap:
-                return self.set_position(processed_position)
+        if not self.repaint_due:
             return False
-        if not self.overlay_complete and self.position < processed_position:
-            return self._schedule_render()
-        return False
+        if self._playing:
+            return self.set_position(self._processed_position())
+        return self._schedule_render()
 
     def force_repaint(self) -> None:
         """Redraw even though neither the position nor the coverage moved.
@@ -175,7 +282,7 @@ class MaskRenderCore:
         return True
 
     def render_now(self) -> RenderOutcome:
-        """Mirrors the original ``_rerender_if_needed`` + ``_produce_frame``.
+        """Produce the frame to display now, if anything has changed.
 
         Always clears the render-pending flag, even if nothing is rendered,
         so a later ``set_position``/``frame_ready`` call can schedule again.
@@ -183,7 +290,7 @@ class MaskRenderCore:
         try:
             if (
                 not self._force_render
-                and self.position == self._pending_position
+                and self._position == self._pending_position
                 and not self._repaint_needed()
             ):
                 logger.debug("render_now: nothing to render")
@@ -192,9 +299,9 @@ class MaskRenderCore:
             if new_value is None:
                 # A forced repaint can be the very first render of a video, so
                 # there is no requested position yet -- repaint where we are.
-                new_value = self.position
+                new_value = self._position
                 self._pending_position = new_value
-            self.position = new_value
+            self._position = new_value
             return self._produce_frame(new_value)
         finally:
             self._render_pending = False
@@ -205,14 +312,14 @@ class MaskRenderCore:
 
         The answer is the active mode's: only it knows what it is waiting for.
         """
-        if self.mode is None:
+        if self._mode is None:
             return False
-        return self.mode.repaint_needed(
-            self.position_to_frame_index(self.position), self.overlay_complete
+        return self._mode.repaint_needed(
+            self.position_to_frame_index(self._position), self._overlay_complete
         )
 
     def _produce_frame(self, position: float) -> RenderOutcome:
-        capture = self.cap
+        capture = self._cap
         if not capture:
             logger.warning("_produce_frame: no video capture available for rendering")
             return RenderOutcome(should_emit=True, image=None)
@@ -222,19 +329,20 @@ class MaskRenderCore:
             logger.warning("_produce_frame: cannot read frame %d", frame_idx)
             return RenderOutcome(should_emit=True, image=None)
         img: ndarray = r
-        self.rendered_frame_index = frame_idx
+        self._rendered_frame_index = frame_idx
         # Kept before the mode draws anything: a marked frame must be stored
         # without annotation.
-        self.raw_frame = img.copy()
-        self.overlay_complete = self.mode.draw(img, frame_idx) if self.mode is not None else True
-        self.frame_count += 1
+        self._raw_frame = img.copy()
+        self._overlay_complete = self._mode.draw(img, frame_idx) if self._mode is not None else True
         return RenderOutcome(should_emit=True, image=img)
 
+    # --- naming a frame -----------------------------------------------------
+
     def position_to_frame_index(self, position: float) -> int:
-        frame_idx = int(position * self.total_frame_count)
+        frame_idx = int(position * self._total_frames)
         # A slider at its maximum maps one past the last frame; clamping keeps
         # every reported index one a researcher and a technician can both name.
-        last = int(self.total_frame_count) - 1
+        last = self._total_frames - 1
         return max(0, min(frame_idx, last)) if last >= 0 else 0
 
     def frame_index_to_position(self, frame_index: int) -> float:
@@ -243,9 +351,9 @@ class MaskRenderCore:
         Aims at the middle of the frame's slice of the slider so that rounding
         cannot land the result back on a neighbouring frame.
         """
-        if self.total_frame_count <= 0:
+        if self._total_frames <= 0:
             return 0.0
-        return (frame_index + 0.5) / self.total_frame_count
+        return (frame_index + 0.5) / self._total_frames
 
     @property
     def current_position(self) -> float:
@@ -257,7 +365,7 @@ class MaskRenderCore:
         detection must be requested for the frame just seeked to, not for the
         one still being displayed.
         """
-        return self._pending_position if self._pending_position is not None else self.position
+        return self._pending_position if self._pending_position is not None else self._position
 
     @property
     def current_frame_index(self) -> int:
@@ -270,9 +378,9 @@ class MaskRenderCore:
         the capture's position is a side effect of the last read, which the
         detector and the renderer both perform.
         """
-        if self.fps <= 0:
+        if self._fps <= 0:
             return 0
-        return int(frame_index / self.fps * 1000)
+        return int(frame_index / self._fps * 1000)
 
     def step_frame(self, delta: int) -> float | None:
         """Position *delta* frames away, or None when it would leave the video.
@@ -280,9 +388,9 @@ class MaskRenderCore:
         Returns the new position without applying it; the caller pauses
         playback and seeks, so that stepping is meaningful in the first place.
         """
-        if self.cap is None or self.total_frame_count <= 0:
+        if self._cap is None or self._total_frames <= 0:
             return None
         target = self.current_frame_index + delta
-        if target < 0 or target >= int(self.total_frame_count):
+        if target < 0 or target >= self._total_frames:
             return None
         return self.frame_index_to_position(target)

@@ -6,27 +6,30 @@ boundary: the video capture, the cumulative pass and the detection model. The
 storage tree is real, in a temp directory, because its behaviour under marking
 and undoing is exactly what is being tested.
 
-Threads are faked rather than started: the two background workers are real
-objects whose jobs the test runs inline via ``pump``. That keeps ordering
-deterministic while still exercising the jobs ``VideoMasker`` actually submits.
+Threads are faked rather than started: the review's background executor is
+replaced with one that queues each job until the test runs it via ``pump``.
+That keeps ordering deterministic while still exercising the jobs the review
+actually submits.
 """
 
 import os
 import pickle
 from pathlib import Path
-from queue import Empty, ShutDown
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2
 import numpy as np
 import pytest
-from PySide6.QtCore import QMetaObject, QObject, QThread, QTimer
+from PySide6.QtCore import QMetaObject, QObject, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QVideoSink
 from rat_tracer import ui as ui_module
+from rat_tracer import video_review as review_module
 from rat_tracer.bad_frames import STORAGE_ENV_VAR, BadFrameStore, Detection
 from rat_tracer.ui import VideoMasker
+
+from queued_executor import QueuedExecutor
 
 _H, _W = 16, 24
 _TOTAL_FRAMES = 100
@@ -98,29 +101,28 @@ def harness(monkeypatch, tmp_path):
 
     cache: dict[str, object] = {}
     monkeypatch.setattr(ui_module, "VideoCapture", lambda path: _FakeCapture(_TOTAL_FRAMES))
-    monkeypatch.setattr(ui_module, "video_key", lambda path: "cafe1234")
-    monkeypatch.setattr(ui_module, "YOLO", lambda *a, **k: None)
-    monkeypatch.setattr(ui_module, "model_path", lambda: Path("fake-model.pt"))
-    monkeypatch.setattr(ui_module, "presence_frames", fake_presence_frames)
-    monkeypatch.setattr(ui_module, "load_progress", cache.get)
+    monkeypatch.setattr(review_module, "video_key", lambda path: "cafe1234")
+    monkeypatch.setattr(review_module, "YOLO", lambda *a, **k: None)
+    monkeypatch.setattr(review_module, "model_path", lambda: Path("fake-model.pt"))
+    monkeypatch.setattr(review_module, "presence_frames", fake_presence_frames)
+    monkeypatch.setattr(review_module, "load_progress", cache.get)
     monkeypatch.setattr(
-        ui_module,
+        review_module,
         "save_progress",
         lambda history, key: cache.__setitem__(key, pickle.loads(pickle.dumps(history))),
     )
-    monkeypatch.setattr(QThread, "start", lambda self, priority=None: self.run())
+    monkeypatch.setattr(ui_module.CoveragePass, "start", lambda self: self._run())
     monkeypatch.setattr(QTimer, "singleShot", staticmethod(lambda _msec, cb: cb()))
-    # The queue-driven workers would block forever if run inline; the test
-    # pumps their jobs instead, so their threads never start.
-    monkeypatch.setattr(ui_module._Worker, "start", lambda self, priority=None: None)
-    monkeypatch.setattr(ui_module._Worker, "wait", lambda self, *a, **k: True)
 
+    executor = QueuedExecutor()
+    monkeypatch.setattr(ui_module, "QtBackgroundExecutor", lambda parent=None: executor)
     detector = _FakeDetector()
     monkeypatch.setattr(ui_module, "YoloFrameDetector", lambda *a, **k: detector)
 
     class Harness:
         root = tmp_path / "bad_frames"
         detector_stub = detector
+        executor_stub = executor
 
         def open(self) -> VideoMasker:
             masker = VideoMasker()
@@ -129,29 +131,9 @@ def harness(monkeypatch, tmp_path):
             masker.playing = False  # type: ignore[assignment]
             return masker
 
-        def pump(self, masker: VideoMasker) -> None:
-            """Run every queued background job, then let renders settle.
-
-            The workers live inside the Qt service adapters, which create them
-            on first use -- so a service with no work yet has none.
-            """
-            for _ in range(10):
-                ran = False
-                for service in (masker._detection, masker._storage):
-                    worker = service._worker
-                    if worker is None:
-                        continue
-                    while True:
-                        try:
-                            job = worker._queue.get_nowait()
-                        except (Empty, ShutDown):
-                            break
-                        # Through the worker's own error handling, so a failing
-                        # job behaves here exactly as it would on the thread.
-                        worker.run_job(job)
-                        ran = True
-                if not ran:
-                    return
+        def pump(self) -> None:
+            """Run every queued background job, and the renders they trigger."""
+            executor.pump()
 
         def store(self) -> BadFrameStore:
             return BadFrameStore(self.root)
@@ -162,7 +144,7 @@ def harness(monkeypatch, tmp_path):
 def _enter_problem_mode(masker: VideoMasker, harness, position: float = 0.5) -> None:
     masker.position = position  # type: ignore[assignment]
     masker.problem_mode = True  # type: ignore[assignment]
-    harness.pump(masker)
+    harness.pump()
 
 
 def test_entering_problem_mode_pauses_and_asks_for_this_frame(qapp, harness):
@@ -195,8 +177,8 @@ def test_marking_stores_the_raw_frame_and_leaves_the_position_alone(qapp, harnes
     position_before = masker.position
     frame_index = masker.frame_index
 
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     assert masker.position == position_before, "marking reads the frame, it does not navigate"
     stored = harness.root / "images" / f"experiment_{frame_index:06d}.png"
@@ -209,18 +191,15 @@ def test_marking_stores_the_raw_frame_and_leaves_the_position_alone(qapp, harnes
     masker.reset()
 
 
-def test_a_marked_frame_shows_as_marked_and_cannot_be_marked_twice(qapp, harness):
+def test_a_marked_frame_shows_as_marked(qapp, harness):
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
     assert not masker.frame_marked
 
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
+
     assert masker.frame_marked
-
-    masker.markBadFrame()  # the control would be disabled; belt and braces
-    harness.pump(masker)
-
     assert len(list((harness.root / "images").glob("*.png"))) == 1
     masker.reset()
 
@@ -228,11 +207,11 @@ def test_a_marked_frame_shows_as_marked_and_cannot_be_marked_twice(qapp, harness
 def test_undo_removes_every_file_and_records_the_retraction(qapp, harness):
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     masker.undoLastMark()
-    harness.pump(masker)
+    harness.pump()
 
     assert list((harness.root / "images").glob("*.png")) == []
     assert list((harness.root / "meta").glob("*.json")) == []
@@ -263,7 +242,7 @@ def test_marking_is_impossible_without_a_video(qapp, harness):
     masker.video_output = QVideoSink()  # type: ignore[assignment]
 
     assert not masker.can_mark
-    masker.markBadFrame()  # must not raise
+    masker.toggleMark()  # must not raise
 
     assert not (harness.root / "images").exists()
 
@@ -280,17 +259,17 @@ def test_stepping_moves_one_frame_and_pauses(qapp, harness):
     masker = harness.open()
     masker.playing = True
     masker.position = 0.5
-    harness.pump(masker)
+    harness.pump()
     start = masker.frame_index
 
     masker.stepFrame(1)
-    harness.pump(masker)
+    harness.pump()
 
     assert masker.frame_index == start + 1
     assert not masker.playing
 
     masker.stepFrame(-1)
-    harness.pump(masker)
+    harness.pump()
     assert masker.frame_index == start
     masker.reset()
 
@@ -305,14 +284,14 @@ def test_a_failed_save_is_reported_and_the_application_keeps_running(qapp, harne
         raise OSError("disk full")
 
     monkeypatch.setattr(BadFrameStore, "mark", explode)
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     assert failures == [masker.frame_index]
     assert not masker.frame_marked
     # The researcher's position is untouched and navigation still works.
     masker.stepFrame(1)
-    harness.pump(masker)
+    harness.pump()
     masker.reset()
 
 
@@ -326,9 +305,9 @@ def test_a_detection_failure_leaves_the_control_disabled_and_retryable(qapp, har
     # Seeking away and back must ask again rather than staying stuck.
     harness.detector_stub.fail = False
     masker.position = 0.6
-    harness.pump(masker)
+    harness.pump()
     masker.position = 0.5
-    harness.pump(masker)
+    harness.pump()
     assert masker.can_mark
     masker.reset()
 
@@ -340,8 +319,8 @@ def test_the_sidecar_records_what_the_model_produced(qapp, harness):
     _enter_problem_mode(masker, harness, 0.5)
     frame_index = masker.frame_index
 
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     meta = json.loads(
         (harness.root / "meta" / f"experiment_{frame_index:06d}.json").read_text(encoding="utf-8")
@@ -362,10 +341,10 @@ def test_a_second_click_before_the_write_lands_stores_one_frame(qapp, harness):
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
 
-    masker.markBadFrame()
+    masker.toggleMark()
     assert not masker.can_mark, "the control is disabled while the write is in flight"
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     assert len(list((harness.root / "images").glob("*.png"))) == 1
     events = [
@@ -384,7 +363,7 @@ def test_the_control_is_refreshed_even_when_nothing_is_stored(qapp, harness):
     refreshes: list[int] = []
     masker.mark_state_changed.connect(lambda: refreshes.append(1))
 
-    masker.markBadFrame()
+    masker.toggleMark()
 
     assert refreshes, "the control was left claiming a state it does not have"
     masker.reset()
@@ -394,12 +373,12 @@ def test_the_control_stops_showing_a_mark_once_the_undo_has_run(qapp, harness):
     """Undo is a background job too: the files are gone only when it has run."""
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
     assert masker.frame_marked
 
     masker.undoLastMark()
-    harness.pump(masker)
+    harness.pump()
 
     assert not masker.frame_marked
     masker.reset()
@@ -413,8 +392,8 @@ def test_a_failed_save_frees_the_frame_to_be_marked_again(qapp, harness, monkeyp
         raise OSError("disk full")
 
     monkeypatch.setattr(BadFrameStore, "mark", explode)
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     assert not masker.frame_marked
     assert masker.can_mark, "a failed write must not disable the control forever"
@@ -427,12 +406,12 @@ def test_unmarking_the_displayed_frame_removes_it(qapp, harness):
     screen and the control already says it is stored."""
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
     assert masker.frame_marked
 
-    masker.unmarkFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     assert not masker.frame_marked
     assert list((harness.root / "images").glob("*.png")) == []
@@ -448,14 +427,14 @@ def test_unmarking_the_displayed_frame_removes_it(qapp, harness):
 def test_a_frame_can_be_marked_again_after_being_unmarked(qapp, harness):
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
-    masker.unmarkFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
+    masker.toggleMark()
+    harness.pump()
 
     assert masker.can_mark, "the control must be usable again"
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     assert masker.frame_marked
     assert len(list((harness.root / "images").glob("*.png"))) == 1
@@ -465,13 +444,13 @@ def test_a_frame_can_be_marked_again_after_being_unmarked(qapp, harness):
 def test_a_second_unmark_click_removes_one_frame_once(qapp, harness):
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
-    masker.unmarkFrame()
+    masker.toggleMark()
     assert not masker.can_mark, "the control is disabled while the removal is in flight"
-    masker.unmarkFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
 
     events = [
         line.split('"event": "')[1].split('"')[0]
@@ -481,29 +460,18 @@ def test_a_second_unmark_click_removes_one_frame_once(qapp, harness):
     masker.reset()
 
 
-def test_unmarking_an_unmarked_frame_stores_nothing(qapp, harness):
-    masker = harness.open()
-    _enter_problem_mode(masker, harness, 0.5)
-
-    masker.unmarkFrame()
-    harness.pump(masker)
-
-    assert not (harness.root / "index.jsonl").exists()
-    masker.reset()
-
-
 def test_undo_after_unmarking_does_not_remove_a_later_mark(qapp, harness):
     """Undo targets the last mark; once that frame has been withdrawn by hand
     there is nothing left for it to remove."""
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
-    masker.unmarkFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
+    masker.toggleMark()
+    harness.pump()
 
     masker.undoLastMark()
-    harness.pump(masker)
+    harness.pump()
 
     events = [
         line.split('"event": "')[1].split('"')[0]
@@ -534,15 +502,15 @@ def test_clicking_the_ticked_control_removes_the_stored_frame(qapp, harness):
     masker.video = _VIDEO  # type: ignore[assignment]
     masker.playing = False  # type: ignore[assignment]
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
+    masker.toggleMark()
+    harness.pump()
     qapp.processEvents()
     assert control.property("checked")
     assert control.property("enabled"), "a stored frame must still be clickable to withdraw it"
 
     QMetaObject.invokeMethod(control, "toggle")
     QMetaObject.invokeMethod(control, "clicked")
-    harness.pump(masker)
+    harness.pump()
     qapp.processEvents()
 
     assert not masker.frame_marked
@@ -552,18 +520,26 @@ def test_clicking_the_ticked_control_removes_the_stored_frame(qapp, harness):
     del engine
 
 
-def test_reset_stops_the_workers_it_started(qapp, harness):
-    """``reset()`` runs on ``aboutToQuit``, so it is the last chance to join the
-    background threads. One left running is destroyed while running at
-    interpreter shutdown, which Qt turns into an abort."""
+def test_reset_finishes_the_writes_that_are_still_queued(qapp, harness):
+    """``reset()`` runs on ``aboutToQuit``, so it is the last chance to finish a
+    write. An abandoned one loses the observation, which is the only copy."""
     masker = harness.open()
     _enter_problem_mode(masker, harness, 0.5)
-    masker.markBadFrame()
-    harness.pump(masker)
-    assert masker._detection._worker is not None, "sanity check: detection ran"
-    assert masker._storage._worker is not None, "sanity check: storage ran"
+    frame_index = masker.frame_index
+
+    masker.toggleMark()  # left queued: no pump before the reset
+    masker.reset()
+
+    stored = harness.root / "images" / f"experiment_{frame_index:06d}.png"
+    assert stored.is_file(), "the queued write was dropped instead of finished"
+
+
+def test_reset_stops_the_pass_it_started(qapp, harness):
+    """A thread still running at interpreter shutdown is what Qt turns into an
+    abort, so the pass has to be both interrupted and joined."""
+    masker = harness.open()
+    assert masker._pass is not None, "sanity check: opening a video starts the pass"
 
     masker.reset()
 
-    assert masker._detection._worker is None, "the detector's thread was left running"
-    assert masker._storage._worker is None, "the storage thread was left running"
+    assert masker._pass is None
