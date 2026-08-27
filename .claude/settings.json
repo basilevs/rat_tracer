@@ -18,7 +18,8 @@
       "Bash(make typecheck *)",
       "Bash(make format *)",
       "Bash(make check *)",
-      "Bash(.venv/bin/python -m pytest tests/test_background.py -q)"
+      "Bash(.venv/bin/python -m pytest tests/test_background.py -q)",
+      "Bash(.venv/bin/python -m pytest tests -q)"
     ]
   },
   "enabledPlugins": {

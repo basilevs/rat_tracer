@@ -259,14 +259,6 @@ class MaskRenderCore:
             return self.set_position(self._processed_position())
         return self._schedule_render()
 
-    def force_repaint(self) -> None:
-        """Redraw even though neither the position nor the coverage moved.
-
-        Needed when what the *mode* can draw has changed under a still frame --
-        a detection arriving for the frame on screen, say.
-        """
-        self._force_render = True
-
     def set_position(self, new_value: float) -> bool:
         """Returns True if the caller should schedule a render now."""
         if self._pending_position == new_value:

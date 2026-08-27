@@ -12,7 +12,6 @@ loop.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
 from threading import Event
@@ -20,40 +19,19 @@ from time import time
 
 from ultralytics import YOLO
 
-from rat_tracer.background import BackgroundExecutor, InlineExecutor, Job
-from rat_tracer.bad_frames import BadFrameStore, Detection, MarkRequest
+from rat_tracer.background import BackgroundExecutor
+from rat_tracer.bad_frames import BadFrameStore
 from rat_tracer.frame_detector import FrameDetector
 from rat_tracer.lib import model_path
 from rat_tracer.mask_render_core import FrameCapture, MaskRenderCore, RenderOutcome
 from rat_tracer.paint import presence_frames
 from rat_tracer.progress_cache import load_progress, save_progress, video_key
-from rat_tracer.review_modes import CoverageMode, ProblemReportMode, Retraction, ReviewMode
+from rat_tracer.review_listener import ReviewListener
+from rat_tracer.review_modes import CoverageMode, ProblemReportMode, ReviewMode
 
 logger = getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class ReviewListener:
-    """What the review tells the UI, as plain callbacks.
-
-    Deliberately not Qt signals: the review must stay drivable without an
-    event loop. ``VideoMasker`` supplies callbacks that emit the real signals.
-
-    Three, not one. ``changed`` is everything the UI can work out for itself by
-    looking -- where the video is, what the controls should show, whether a
-    repaint is due. A finished write cannot be worked out by looking: by the
-    time anything repaints, a frame is simply stored or not, with no record of
-    which write just landed or whether it succeeded. So the mark outcomes stay
-    separate and carry the frame index the researcher is told about.
-    """
-
-    #: Something the UI displays has moved, and a render may be due with it.
-    #: May arrive on the cumulative pass's thread.
-    changed: Callable[[], None] = lambda: None
-    #: A frame is safely on disk -- its index is shown in the confirmation.
-    mark_stored: Callable[[int], None] = lambda _index: None
-    #: A frame could *not* be stored; the researcher must be told.
-    mark_failed: Callable[[int], None] = lambda _index: None
+__all__ = ["ReviewListener", "VideoReview"]
 
 
 class VideoReview:
@@ -91,16 +69,16 @@ class VideoReview:
         store: BadFrameStore | None = None,
     ):
         self.listener = listener if listener is not None else ReviewListener()
-        self._executor = executor if executor is not None else InlineExecutor()
-        self._detector = detector
-        self._store = store
         self._render = MaskRenderCore()
         self._coverage = CoverageMode(self._render.history)
-        self._problem = ProblemReportMode(view=self._render, detector=detector, store=store)
+        self._problem = ProblemReportMode(
+            view=self._render,
+            executor=executor,
+            listener=self.listener,
+            detector=detector,
+            store=store,
+        )
         self._render.adopt_mode(self._coverage)
-        #: The one outstanding detection, so a newer frame can abandon it.
-        self._detection_job: tuple[int, Job] | None = None
-        self._prewarmed = False
         #: Set by the pass's thread, consumed by the next render. Following the
         #: processed frontier has to be something the pass *did*, not something
         #: a render polls for -- polling would drag playback back to the
@@ -115,7 +93,6 @@ class VideoReview:
         self.listener.changed()
 
     def close_video(self) -> None:
-        self._abandon_detection()
         self._pass_advanced_since_render.clear()
         self._render.reset()
         self._problem.forget_video()
@@ -202,22 +179,8 @@ class VideoReview:
             return
         if value:
             self.set_playing(False)
-            self._prewarm()
         self._select(self._problem if value else self._coverage)
         self.listener.changed()
-
-    def _prewarm(self) -> None:
-        """Load the detection model before a frame is waiting on it, once.
-
-        The first inference in a process costs seconds while later ones cost a
-        fraction of one. The queue is serial, so paying it as the mode is
-        entered puts it ahead of the request it would otherwise delay.
-        """
-        detector = self._detector
-        if self._prewarmed or detector is None:
-            return
-        self._prewarmed = True
-        self._executor.submit(detector.prewarm)
 
     def _select(self, mode: ReviewMode) -> None:
         if self._render.set_mode(mode):
@@ -293,57 +256,10 @@ class VideoReview:
             self._render.frame_ready()
         outcome = self._render.render_now()
         if self.problem_mode:
-            # The newly drawn frame may be one nobody has asked about yet.
-            self._request_detection()
+            # The newly drawn frame may be one nobody has asked about yet. What
+            # is worth asking, and what to do with the answer, is the mode's.
+            self._problem.request_detection()
         return outcome
-
-    # --- detection ----------------------------------------------------------
-
-    def _request_detection(self) -> None:
-        pending = self._problem.detection_request()
-        if pending is None:
-            return
-        frame_index, image = pending
-        detector = self._detector
-        assert detector is not None  # detection_request answers None without one
-        self._abandon_detection()
-        self._detection_job = (
-            frame_index,
-            self._executor.submit(
-                lambda: detector.detect(image),
-                on_done=lambda detection: self._detection_ready(frame_index, detection),
-                on_error=lambda _error: self._detection_failed(frame_index),
-            ),
-        )
-
-    def _abandon_detection(self) -> None:
-        """Drop a request the researcher has already seeked past.
-
-        Seeking produces requests faster than inference answers them, and they
-        are looking at the newest frame -- so an outstanding request is
-        cancelled rather than left queued in front of the one that matters. A
-        cancelled frame goes back to being unasked, so returning to it asks
-        again.
-        """
-        outstanding = self._detection_job
-        self._detection_job = None
-        if outstanding is None:
-            return
-        frame_index, job = outstanding
-        if job.cancel():
-            self._problem.detection_failed(frame_index)
-
-    def _detection_ready(self, frame_index: int, detection: Detection) -> None:
-        logger.debug("detection_ready: frame %d, %d box(es)", frame_index, len(detection.boxes))
-        if self._problem.detection_ready(frame_index, detection) and self.problem_mode:
-            self._render.force_repaint()
-        # An answer for a frame already left is kept for the researcher's
-        # return; it just does not change anything on screen.
-        self.listener.changed()
-
-    def _detection_failed(self, frame_index: int) -> None:
-        self._problem.detection_failed(frame_index)
-        self.listener.changed()
 
     # --- marking ------------------------------------------------------------
 
@@ -368,67 +284,13 @@ class VideoReview:
         re-derived in the UI from a tick a click has already flipped.
         """
         if self.frame_marked:
-            self._submit_retraction(self._problem.unmark(self._showing_judged_frame))
+            self._problem.unmark(self._showing_judged_frame)
         else:
-            self._submit_mark(self._problem.mark(self._showing_judged_frame))
+            self._problem.mark(self._showing_judged_frame)
         # Even a refused click refreshes the control: it flips its own tick, so
         # it has to be sent back to reporting what is on disk.
         self.listener.changed()
 
     def undo(self) -> None:
         """Delete everything stored for the most recent mark."""
-        if self._submit_retraction(self._problem.undo()):
-            self.listener.changed()
-
-    def _submit_mark(self, request: MarkRequest | None) -> bool:
-        if request is None:
-            return False
-        store = self._store
-        assert store is not None  # mark() answers None without one
-        frame_index = request.frame_index
-        self._executor.submit(
-            lambda: store.mark(request),
-            on_done=lambda _name: self._mark_stored(frame_index),
-            on_error=lambda _error: self._mark_failed(frame_index),
-        )
-        return True
-
-    def _submit_retraction(self, retraction: Retraction | None) -> bool:
-        if retraction is None:
-            return False
-        store = self._store
-        assert store is not None  # unmark()/undo() answer None without one
-        key, frame_index, stem = retraction
-        self._executor.submit(
-            lambda: store.retract(key, frame_index, stem),
-            on_done=lambda _none: self._mark_removed(frame_index),
-            on_error=lambda _error: self._retraction_failed(frame_index),
-        )
-        return True
-
-    def _mark_stored(self, frame_index: int) -> None:
-        logger.info("Marked frame %d", frame_index)
-        self._problem.storage_finished(frame_index)
-        self.listener.changed()
-        self.listener.mark_stored(frame_index)
-
-    def _mark_failed(self, frame_index: int) -> None:
-        logger.error("Could not store frame %d", frame_index)
-        self._problem.storage_finished(frame_index)
-        self._problem.forget_last_mark()
-        self.listener.changed()
-        self.listener.mark_failed(frame_index)
-
-    def _mark_removed(self, frame_index: int) -> None:
-        # The files are gone only once storage has run, so the control is
-        # refreshed then rather than when the removal was requested.
-        logger.info("Retracted frame %d", frame_index)
-        self._problem.storage_finished(frame_index)
-        self.listener.changed()
-
-    def _retraction_failed(self, frame_index: int) -> None:
-        # Nothing was removed, but the control must not stay disabled for a
-        # write that will never finish -- the researcher can try again.
-        logger.error("Could not retract frame %d", frame_index)
-        self._problem.storage_finished(frame_index)
-        self.listener.changed()
+        self._problem.undo()

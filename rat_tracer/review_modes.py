@@ -17,12 +17,14 @@ it needs redrawing, and what it makes possible. Choosing between them belongs
 to :class:`~rat_tracer.video_review.VideoReview`; neither mode knows the
 other exists, and neither imports Qt.
 
-Neither mode runs anything slow itself. Inference and disk writes are the
-review's to schedule, so what is here decides *whether* to ask and *what* to
-ask for -- :meth:`ProblemReportMode.detection_request`,
-:meth:`ProblemReportMode.mark` -- and records the answer when it comes back.
-That keeps the in-flight guards, the caching and the undo bookkeeping in one
-place without giving a mode a thread of its own.
+Problem reporting mode is the one with work to do -- inference for the frame on
+screen, and writing the frames judged wrong. It runs that work on the executor
+it is given and keeps the whole lifecycle to itself: what is worth asking, what
+is already on its way, what may not be clicked twice while a write is in
+flight. None of that is anybody else's to sequence, so none of it is on its
+API; what comes out is :meth:`ProblemReportMode.request_detection`,
+:meth:`ProblemReportMode.mark`, :meth:`ProblemReportMode.unmark` and
+:meth:`ProblemReportMode.undo`, and a notification when something has landed.
 """
 
 from logging import getLogger
@@ -31,10 +33,12 @@ from typing import Protocol
 
 from numpy import ndarray
 
+from rat_tracer.background import BackgroundExecutor, InlineExecutor, Job
 from rat_tracer.bad_frames import BadFrameStore, Detection, MarkRequest
 from rat_tracer.coverage import CoverageHistory
 from rat_tracer.frame_detector import FrameDetector
 from rat_tracer.paint import apply_red_mask, draw_detection_boxes
+from rat_tracer.review_listener import ReviewListener
 
 logger = getLogger(__name__)
 
@@ -130,17 +134,28 @@ class ProblemReportMode:
 
     The cumulative track is not drawn here at all: it is the union of every
     detection so far, so a red region says nothing about *this* frame.
+
+    Everything slow it needs -- inference for the frame on screen, and writing
+    the frames judged wrong -- goes to the executor it was given, and it keeps
+    the whole lifecycle of both: what is worth asking about, what is already on
+    its way, what a cancelled request means, and what may not be clicked again
+    until a write has landed. Nobody outside sequences any of that; the listener
+    is told when something has landed, and the answer is there to be looked at.
     """
 
     def __init__(
         self,
         view: VideoView,
+        executor: BackgroundExecutor | None = None,
+        listener: ReviewListener | None = None,
         detector: FrameDetector | None = None,
         store: BadFrameStore | None = None,
     ):
         self.view = view
-        self.detector = detector
-        self.store = store
+        self._executor = executor if executor is not None else InlineExecutor()
+        self._listener = listener if listener is not None else ReviewListener()
+        self._detector = detector
+        self._store = store
         # Cached per frame index, so returning to a frame does not pay for
         # inference twice and "the detector found nothing" stays
         # distinguishable from "no answer yet".
@@ -148,12 +163,15 @@ class ProblemReportMode:
         # Frames already asked about, so seeking back and forth does not
         # re-request an answer that is already on its way.
         self._requested: set[int] = set()
+        #: The one request still out, so a newer frame can abandon it.
+        self._outstanding: tuple[int, Job] | None = None
         # Frames whose write or removal has been handed to storage but has not
         # finished. Storage is asynchronous, so ``frame_marked`` stays false
         # meanwhile, and without this the control would look available for a
         # second click.
         self._in_flight: set[int] = set()
         self._last_mark: Retraction | None = None
+        self._prewarmed = False
 
     # --- drawing ------------------------------------------------------------
 
@@ -170,12 +188,13 @@ class ProblemReportMode:
         return not drawn and frame_index in self._detections
 
     def entered(self) -> None:
-        pass
+        self._prewarm()
 
     def left(self) -> None:
         pass
 
     def forget_video(self) -> None:
+        self._abandon_outstanding()
         self._detections.clear()
         self._requested.clear()
         self._in_flight.clear()
@@ -183,46 +202,85 @@ class ProblemReportMode:
 
     # --- detection ----------------------------------------------------------
 
-    def detection_request(self) -> tuple[int, ndarray] | None:
-        """The frame that should be asked about now, and the image to ask with.
+    def request_detection(self) -> None:
+        """Ask about the frame on screen, if that is worth doing.
 
-        Returns None when there is nothing to ask -- no detector, playing, the
-        answer already known or already on its way, or the frame not on screen
-        yet, in which case the render that puts it there asks again. Records the
-        request, so the same frame goes out at most once.
+        Does nothing when there is no detector, when playing, when the answer is
+        already known or already on its way, or when the frame is not on screen
+        yet -- in which case the render that puts it there asks again. Called
+        after every render, so "worth doing" is decided here rather than by the
+        caller.
         """
-        if self.detector is None or self.view.playing:
-            return None
+        detector = self._detector
+        if detector is None or self.view.playing:
+            return
         frame_index = self.view.current_frame_index
         if frame_index in self._detections or frame_index in self._requested:
-            return None
+            return
         if self.view.rendered_frame_index != frame_index or self.view.raw_frame is None:
-            return None
-        logger.debug("detection_request: frame %d", frame_index)
+            return
+        logger.debug("request_detection: frame %d", frame_index)
         self._requested.add(frame_index)
         # A copy, because detection runs later while rendering keeps mutating
         # its own frame.
-        return frame_index, self.view.raw_frame.copy()
+        image = self.view.raw_frame.copy()
+        self._abandon_outstanding()
+        self._outstanding = (
+            frame_index,
+            self._executor.submit(
+                lambda: detector.detect(image),
+                on_done=lambda detection: self._detection_arrived(frame_index, detection),
+                on_error=lambda _error: self._detection_lost(frame_index),
+            ),
+        )
 
-    def detection_ready(self, frame_index: int, detection: Detection) -> bool:
-        """Record an answer; returns True if the displayed frame changed."""
-        self._detections[frame_index] = detection
+    def _prewarm(self) -> None:
+        """Load the model before a frame is waiting on it, once per review.
+
+        The first inference in a process costs seconds while later ones cost a
+        fraction of one. The queue is serial, so paying it as the mode is
+        entered puts it ahead of the request it would otherwise delay.
+        """
+        detector = self._detector
+        if self._prewarmed or detector is None:
+            return
+        self._prewarmed = True
+        self._executor.submit(detector.prewarm)
+
+    def _abandon_outstanding(self) -> None:
+        """Drop a request the researcher has already seeked past.
+
+        Seeking produces requests faster than inference answers them, and they
+        are looking at the newest frame -- so an outstanding request is
+        cancelled rather than left queued in front of the one that matters. A
+        cancelled frame goes back to being unasked, so returning to it asks
+        again.
+        """
+        outstanding = self._outstanding
+        self._outstanding = None
+        if outstanding is None:
+            return
+        frame_index, job = outstanding
+        if job.cancel():
+            self._requested.discard(frame_index)
+
+    def _detection_arrived(self, frame_index: int, detection: Detection) -> None:
+        logger.debug("detection: frame %d, %d box(es)", frame_index, len(detection.boxes))
         # An answer for a frame the researcher has already left is kept for
-        # their return, but nothing on screen changes.
-        return frame_index == self.view.current_frame_index
+        # their return; the render that follows redraws only if it is this one,
+        # which ``repaint_needed`` is what decides.
+        self._detections[frame_index] = detection
+        self._listener.changed()
 
-    def detection_failed(self, frame_index: int) -> None:
+    def _detection_lost(self, frame_index: int) -> None:
         """Let the frame be asked about again.
 
-        Covers a request that failed and one that was abandoned for a newer
-        frame. Without it, one failure -- a model that will not load, say --
-        would leave the control disabled for that frame for the rest of the
-        review.
+        Without this, one failure -- a model that will not load, say -- would
+        leave the control disabled for that frame for the rest of the review.
         """
+        logger.warning("No detection for frame %d", frame_index)
         self._requested.discard(frame_index)
-
-    def detection_for(self, frame_index: int) -> Detection | None:
-        return self._detections.get(frame_index)
+        self._listener.changed()
 
     # --- marking ------------------------------------------------------------
 
@@ -235,7 +293,7 @@ class ProblemReportMode:
         """
         return (
             showing_judged_frame
-            and self.store is not None
+            and self._store is not None
             and self.view.video_key is not None
             and self.view.current_frame_index not in self._in_flight
         )
@@ -243,27 +301,34 @@ class ProblemReportMode:
     @property
     def frame_marked(self) -> bool:
         """Whether the displayed frame is already stored."""
-        if self.store is None or self.view.video_key is None:
+        if self._store is None or self.view.video_key is None:
             return False
-        return self.store.is_marked(self.view.video_key, self.view.current_frame_index)
+        return self._store.is_marked(self.view.video_key, self.view.current_frame_index)
 
-    def mark(self, showing_judged_frame: bool) -> MarkRequest | None:
-        """Claim the frame on screen for storage; returns what to write.
+    def mark(self, showing_judged_frame: bool) -> None:
+        """Store the frame on screen, if it may be.
 
-        Returns None if nothing may be stored. Reads the current frame; it never
+        Does nothing if nothing may be stored. Reads the current frame; it never
         navigates, so the position and the recorded coverage are untouched. The
-        frame counts as in flight from here until
-        :meth:`storage_finished`, whichever way the write goes.
+        frame counts as in flight from here until the write lands, which is what
+        stops a second click queueing a second write.
         """
         request = self._build_mark_request(showing_judged_frame)
         if request is None:
-            return None
-        self._last_mark = (request.video_key, request.frame_index, request.video_stem)
-        self._in_flight.add(request.frame_index)
-        return request
+            return
+        store = self._store
+        assert store is not None  # _build_mark_request answers None without one
+        frame_index = request.frame_index
+        self._last_mark = (request.video_key, frame_index, request.video_stem)
+        self._in_flight.add(frame_index)
+        self._executor.submit(
+            lambda: store.mark(request),
+            on_done=lambda _name: self._stored(frame_index),
+            on_error=lambda _error: self._not_stored(frame_index),
+        )
 
-    def unmark(self, showing_judged_frame: bool) -> Retraction | None:
-        """Withdraw the frame on screen; returns what to remove, or None.
+    def unmark(self, showing_judged_frame: bool) -> None:
+        """Withdraw the frame on screen, if it is stored.
 
         The five-second Undo is the correction for a misclick, but it cannot
         help a researcher looking straight at a frame they marked earlier.
@@ -271,7 +336,7 @@ class ProblemReportMode:
         the control already says it is stored.
         """
         if not self.can_mark(showing_judged_frame) or not self.frame_marked:
-            return None
+            return
         video_path = self.view.video_path
         video_key = self.view.video_key
         assert video_path is not None and video_key is not None
@@ -279,24 +344,53 @@ class ProblemReportMode:
         if self._last_mark is not None and self._last_mark[1] == frame_index:
             # Undo would now have nothing left to remove.
             self._last_mark = None
-        self._in_flight.add(frame_index)
-        return video_key, frame_index, video_path.stem
+        self._retract((video_key, frame_index, video_path.stem))
 
-    def undo(self) -> Retraction | None:
-        """Withdraw the most recent mark; returns what to remove, or None."""
-        if self._last_mark is None or self.store is None:
-            return None
-        video_key, frame_index, stem = self._last_mark
-        self._last_mark = None
-        self._in_flight.add(frame_index)
-        return video_key, frame_index, stem
+    def undo(self) -> None:
+        """Delete everything stored for the most recent mark."""
+        if self._last_mark is None or self._store is None:
+            return
+        last_mark, self._last_mark = self._last_mark, None
+        self._retract(last_mark)
 
-    def storage_finished(self, frame_index: int) -> None:
-        """Storage is done with *frame_index*, whichever way it went."""
+    def _retract(self, retraction: Retraction) -> None:
+        store = self._store
+        assert store is not None  # both callers check
+        video_key, frame_index, stem = retraction
+        self._in_flight.add(frame_index)
+        self._executor.submit(
+            lambda: store.retract(video_key, frame_index, stem),
+            on_done=lambda _none: self._removed(frame_index),
+            on_error=lambda _error: self._not_removed(frame_index),
+        )
+
+    def _stored(self, frame_index: int) -> None:
+        logger.info("Marked frame %d", frame_index)
         self._in_flight.discard(frame_index)
+        self._listener.changed()
+        self._listener.mark_stored(frame_index)
 
-    def forget_last_mark(self) -> None:
+    def _not_stored(self, frame_index: int) -> None:
+        logger.error("Could not store frame %d", frame_index)
+        self._in_flight.discard(frame_index)
+        # Undo must not offer to remove a frame that was never written.
         self._last_mark = None
+        self._listener.changed()
+        self._listener.mark_failed(frame_index)
+
+    def _removed(self, frame_index: int) -> None:
+        # The files are gone only once storage has run, so the control is
+        # refreshed then rather than when the removal was requested.
+        logger.info("Retracted frame %d", frame_index)
+        self._in_flight.discard(frame_index)
+        self._listener.changed()
+
+    def _not_removed(self, frame_index: int) -> None:
+        # Nothing was removed, but the control must not stay disabled for a
+        # write that will never finish -- the researcher can try again.
+        logger.error("Could not retract frame %d", frame_index)
+        self._in_flight.discard(frame_index)
+        self._listener.changed()
 
     def _build_mark_request(self, showing_judged_frame: bool) -> MarkRequest | None:
         """Describe the frame on screen as a record to store, if it may be.
@@ -327,5 +421,5 @@ class ProblemReportMode:
             frame_index=frame_index,
             timestamp_ms=self.view.timestamp_ms(frame_index),
             detection=detection,
-            model_id=self.detector.model_id if self.detector is not None else "unknown",
+            model_id=self._detector.model_id if self._detector is not None else "unknown",
         )
