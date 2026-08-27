@@ -5,7 +5,20 @@
       "Bash(git commit -m ' *)",
       "WebSearch",
       "Bash(git checkout *)",
-      "Bash(python -m pytest tests/test_*.py -v)"
+      "Bash(python -m pytest tests/test_*.py -v)",
+      "Bash(.venv/bin/python -m pytest tests/test_mask_render_core.py -q)",
+      "Bash(git stash *)",
+      "Bash(.venv/bin/python -m mypy)",
+      "Bash(.venv/bin/python -m pytest tests/test_*.py -q)",
+      "Bash(.venv/bin/python -m pytest tests/test_bad_frame_marking.py -q)",
+      "Bash(.venv/bin/python -m pytest tests/test_bad_frame_marking.py::test_stepping_moves_one_frame_and_pauses -q --no-header -p no:logging)",
+      "Bash(.venv/bin/python -m pytest tests -q -p no:logging)",
+      "Bash(.venv/bin/python -m pytest -m \"not network\" -q)",
+      "Bash(make lint *)",
+      "Bash(make typecheck *)",
+      "Bash(make format *)",
+      "Bash(make check *)",
+      "Bash(.venv/bin/python -m pytest tests/test_background.py -q)"
     ]
   },
   "enabledPlugins": {
