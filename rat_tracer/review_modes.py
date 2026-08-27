@@ -13,9 +13,16 @@ what made the UI complicated:
 
 A single frame cannot be judged from the cumulative view at all, which is why
 these are modes rather than layers. Each is self-contained: what it draws, when
-it needs redrawing, and what it makes possible. Choosing between them belongs
-to :class:`~rat_tracer.video_review.VideoReview`; neither mode knows the
-other exists, and neither imports Qt.
+it needs redrawing, what it makes possible, and the data behind all three.
+Choosing between them belongs to
+:class:`~rat_tracer.video_review.VideoReview`; neither mode knows the other
+exists, and neither imports Qt.
+
+Nothing outside a mode tracks what it drew. A mode is asked
+:meth:`ReviewMode.repaint_needed` and answers from its own record of what it
+last put on screen, which :meth:`ReviewMode.left` clears the moment another mode
+takes over. That is the whole of the swap protocol: the incoming mode has no
+record of the current frame, so it asks to draw, and nobody has to force it.
 
 Problem reporting mode is the one with work to do -- inference for the frame on
 screen, and writing the frames judged wrong. It runs that work on the executor
@@ -27,6 +34,7 @@ API; what comes out is :meth:`ProblemReportMode.request_detection`,
 :meth:`ProblemReportMode.undo`, and a notification when something has landed.
 """
 
+from collections.abc import Callable
 from logging import getLogger
 from pathlib import Path
 from typing import Protocol
@@ -35,9 +43,10 @@ from numpy import ndarray
 
 from rat_tracer.background import BackgroundExecutor, InlineExecutor, Job
 from rat_tracer.bad_frames import BadFrameStore, Detection, MarkRequest
-from rat_tracer.coverage import CoverageHistory
+from rat_tracer.coverage import CoverageHistory, MaskFrame
 from rat_tracer.frame_detector import FrameDetector
 from rat_tracer.paint import apply_red_mask, draw_detection_boxes
+from rat_tracer.progress_cache import load_progress, save_progress
 from rat_tracer.review_listener import ReviewListener
 
 logger = getLogger(__name__)
@@ -75,19 +84,19 @@ class VideoView(Protocol):
 
 
 class ReviewMode(Protocol):
-    """One way of looking at the video.
+    """One way of looking at the video."""
 
-    A mode draws over the decoded frame and says whether it has drawn
-    everything it has: an incomplete overlay is what makes the renderer come
-    back once the missing part -- a processed frame, a detection -- arrives.
-    """
-
-    def draw(self, image: ndarray, frame_index: int) -> bool:
-        """Draw over *image* in place; return True if nothing is outstanding."""
+    def draw(self, image: ndarray, frame_index: int) -> None:
+        """Draw over *image* in place, with whatever is available now."""
         ...
 
-    def repaint_needed(self, frame_index: int, drawn: bool) -> bool:
-        """Whether what is on screen is now missing something it could show."""
+    def repaint_needed(self, frame_index: int) -> bool:
+        """Whether what this mode would draw for *frame_index* is not up.
+
+        Asked about the frame already on screen, so it means "something I was
+        waiting for has arrived" -- or, just after a swap, "that is not my
+        drawing up there at all".
+        """
         ...
 
     def entered(self) -> None:
@@ -95,7 +104,7 @@ class ReviewMode(Protocol):
         ...
 
     def left(self) -> None:
-        """Called when another mode takes over."""
+        """Called when another mode takes over, and owns the screen from now."""
         ...
 
 
@@ -105,27 +114,77 @@ class CoverageMode:
     The track is cumulative and never erased -- per the README that is exactly
     what makes key moments findable, since a region painted red is one the
     subject has visited at some point.
+
+    It owns that track: the pass hands it frames through :meth:`record`, it
+    reloads and saves what a previous run got through, and it reports the
+    frontier it has reached to whoever asked to be told. Playback follows that
+    frontier, which is the only reason anyone outside needs to know about it.
     """
 
-    def __init__(self, history: CoverageHistory):
-        self.history = history
+    def __init__(self, frontier_moved: Callable[[int], None] = lambda _frame_index: None):
+        self._history = CoverageHistory()
+        self._frontier_moved = frontier_moved
+        #: The frame whose track is on screen, or None if this mode's drawing
+        #: is not what is being displayed.
+        self._drawn: int | None = None
 
-    def draw(self, image: ndarray, frame_index: int) -> bool:
-        if not self.history.contains(frame_index):
+    # --- the track ----------------------------------------------------------
+
+    @property
+    def frontier(self) -> int | None:
+        """The last frame the pass has processed, or None if it has none yet."""
+        processed = len(self._history)
+        return processed - 1 if processed else None
+
+    @property
+    def processed_frames(self) -> int:
+        """How far to resume from, so a reopened video does not restart."""
+        return len(self._history)
+
+    def record(self, presence_frame: MaskFrame) -> None:
+        """Take one frame from the pass. Called on the pass's own thread."""
+        self._history.append(presence_frame)
+        self._announce_frontier()
+
+    def resume(self, video_key: str) -> None:
+        """Reload whatever a previous run of the pass got through."""
+        loaded = load_progress(video_key)
+        if loaded is None:
+            return
+        self._history.replace_with(loaded)
+        self._announce_frontier()
+
+    def save(self, video_key: str) -> None:
+        """Keep what the pass has computed, finished or interrupted."""
+        save_progress(self._history, video_key)
+
+    def forget(self) -> None:
+        self._history.clear()
+        self._drawn = None
+
+    def _announce_frontier(self) -> None:
+        frontier = self.frontier
+        if frontier is not None:
+            self._frontier_moved(frontier)
+
+    # --- drawing ------------------------------------------------------------
+
+    def draw(self, image: ndarray, frame_index: int) -> None:
+        if not self._history.contains(frame_index):
             logger.debug("CoverageMode: frame %d is not processed yet", frame_index)
-            return False
-        apply_red_mask(image, self.history[frame_index])
-        return True
+            return
+        apply_red_mask(image, self._history[frame_index])
+        self._drawn = frame_index
 
-    def repaint_needed(self, frame_index: int, drawn: bool) -> bool:
+    def repaint_needed(self, frame_index: int) -> bool:
         # Waiting on the cumulative pass: repaint once it reaches this frame.
-        return not drawn and self.history.contains(frame_index)
+        return self._drawn != frame_index and self._history.contains(frame_index)
 
     def entered(self) -> None:
         pass
 
     def left(self) -> None:
-        pass
+        self._drawn = None
 
 
 class ProblemReportMode:
@@ -172,28 +231,42 @@ class ProblemReportMode:
         self._in_flight: set[int] = set()
         self._last_mark: Retraction | None = None
         self._prewarmed = False
+        #: The frame whose detection is on screen, or None if this mode's
+        #: drawing is not what is being displayed.
+        self._drawn: int | None = None
 
     # --- drawing ------------------------------------------------------------
 
-    def draw(self, image: ndarray, frame_index: int) -> bool:
+    def draw(self, image: ndarray, frame_index: int) -> None:
         detection = self._detections.get(frame_index)
         if detection is None:
             logger.debug("ProblemReportMode: no detection for frame %d yet", frame_index)
-            return False
+            return
         draw_detection_boxes(image, detection.boxes)
-        return True
+        self._drawn = frame_index
 
-    def repaint_needed(self, frame_index: int, drawn: bool) -> bool:
+    def repaint_needed(self, frame_index: int) -> bool:
         # Waiting on the detector: repaint once its answer lands.
-        return not drawn and frame_index in self._detections
+        return self._drawn != frame_index and frame_index in self._detections
+
+    @property
+    def showing_judged_frame(self) -> bool:
+        """Whether the detection for the frame on screen is actually drawn.
+
+        Every stored mark is therefore something the researcher looked at, which
+        is why no metadata field has to assert it. Nobody else can answer this:
+        it is this mode's own drawing it is asking about.
+        """
+        return not self.view.playing and self._drawn == self.view.current_frame_index
 
     def entered(self) -> None:
         self._prewarm()
 
     def left(self) -> None:
-        pass
+        self._drawn = None
 
     def forget_video(self) -> None:
+        self._drawn = None
         self._abandon_outstanding()
         self._detections.clear()
         self._requested.clear()
@@ -284,7 +357,8 @@ class ProblemReportMode:
 
     # --- marking ------------------------------------------------------------
 
-    def can_mark(self, showing_judged_frame: bool) -> bool:
+    @property
+    def can_mark(self) -> bool:
         """Whether the control acts on the frame on screen at all.
 
         Covers both directions -- storing a judged frame and withdrawing a
@@ -292,7 +366,7 @@ class ProblemReportMode:
         a second click cannot queue a second write or removal.
         """
         return (
-            showing_judged_frame
+            self.showing_judged_frame
             and self._store is not None
             and self.view.video_key is not None
             and self.view.current_frame_index not in self._in_flight
@@ -305,7 +379,7 @@ class ProblemReportMode:
             return False
         return self._store.is_marked(self.view.video_key, self.view.current_frame_index)
 
-    def mark(self, showing_judged_frame: bool) -> None:
+    def mark(self) -> None:
         """Store the frame on screen, if it may be.
 
         Does nothing if nothing may be stored. Reads the current frame; it never
@@ -313,7 +387,7 @@ class ProblemReportMode:
         frame counts as in flight from here until the write lands, which is what
         stops a second click queueing a second write.
         """
-        request = self._build_mark_request(showing_judged_frame)
+        request = self._build_mark_request()
         if request is None:
             return
         store = self._store
@@ -327,7 +401,7 @@ class ProblemReportMode:
             on_error=lambda _error: self._not_stored(frame_index),
         )
 
-    def unmark(self, showing_judged_frame: bool) -> None:
+    def unmark(self) -> None:
         """Withdraw the frame on screen, if it is stored.
 
         The five-second Undo is the correction for a misclick, but it cannot
@@ -335,7 +409,7 @@ class ProblemReportMode:
         Nothing has to be navigated to for that -- the frame is on screen and
         the control already says it is stored.
         """
-        if not self.can_mark(showing_judged_frame) or not self.frame_marked:
+        if not self.can_mark or not self.frame_marked:
             return
         video_path = self.view.video_path
         video_key = self.view.video_key
@@ -392,14 +466,14 @@ class ProblemReportMode:
         self._in_flight.discard(frame_index)
         self._listener.changed()
 
-    def _build_mark_request(self, showing_judged_frame: bool) -> MarkRequest | None:
+    def _build_mark_request(self) -> MarkRequest | None:
         """Describe the frame on screen as a record to store, if it may be.
 
         Returns None -- rather than raising -- for every reason a mark cannot
         be made, because the caller's job is only to relay the answer to the
         control, not to distinguish them.
         """
-        if not self.can_mark(showing_judged_frame):
+        if not self.can_mark:
             logger.debug("mark: nothing judged on screen")
             return None
         video_path = self.view.video_path

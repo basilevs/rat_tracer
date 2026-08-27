@@ -1,31 +1,29 @@
-"""Decoding, position, and when a frame needs drawing again.
+"""The video, where it is stopped, and getting that frame decoded.
 
 This holds no Qt dependency (no QObject, QThread, QTimer, QVideoFrame) so it
 can be driven and unit-tested directly, without an event loop, real threads,
 or monkeypatching Qt's scheduling primitives.
 
-Its remit stops at the frame: which one is displayed, when it must be redrawn,
-and the index and timestamp that name it. *What* is drawn over it belongs to
-the active mode (:mod:`rat_tracer.review_modes`), which this asks rather than
-decides -- so adding a way of looking at the video does not touch this file,
-and this file has no opinion about which way is in use.
+Its remit stops at the frame: which one is displayed, the index and timestamp
+that name it, and handing over its pixels once. It knows nothing about modes --
+not which one is active, not that there is more than one, not that the concept
+exists. Anything drawn over a frame happens after this file is done with it, so
+adding a way of looking at a video does not touch this file at all.
 
-The state behind all of that is private. Whether a render is due is decided
-here, from flags that only :meth:`MaskRenderCore.render_now` may clear, and an
-outside assignment to any of them silently costs a repaint; what callers get
-instead are the questions they actually ask -- :attr:`~MaskRenderCore.position`,
-:attr:`~MaskRenderCore.raw_frame`, :attr:`~MaskRenderCore.showing_judged_frame`.
+The state behind that is private. Whether a decode is due is decided here, from
+flags only :meth:`MaskRenderCore.render_now` may clear, and an outside
+assignment to any of them silently costs a repaint; what callers get instead are
+the questions they actually ask -- :attr:`~MaskRenderCore.position`,
+:attr:`~MaskRenderCore.raw_frame`, :attr:`~MaskRenderCore.displayed_frame_index`.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
 from typing import Protocol
 
 from numpy import ndarray
-
-from rat_tracer.coverage import CoverageHistory
-from rat_tracer.review_modes import ReviewMode
 
 logger = getLogger(__name__)
 
@@ -59,13 +57,9 @@ _NOTHING_TO_RENDER = RenderOutcome(should_emit=False)
 
 
 class MaskRenderCore:
-    """Decides what is shown, and what may be marked, as the pass progresses."""
+    """Where the video is stopped, and the frame that belongs there."""
 
-    def __init__(self, mode: ReviewMode | None = None) -> None:
-        # Outlives every video: the modes are built around this one object, so
-        # closing a video clears it rather than replacing it.
-        self._history = CoverageHistory()
-        self._mode = mode
+    def __init__(self) -> None:
         self._clear()
 
     def _clear(self) -> None:
@@ -85,20 +79,14 @@ class MaskRenderCore:
         self._position = 0.0
         self._pending_position: float | None = None
         self._render_pending = False
-        self._force_render = False
         self._playing = True
-        # The frame as decoded, before the mode drew on it. Every overlay
-        # mutates in place, and a marked frame must be stored raw -- annotated
-        # pixels are unusable as training data (FR-12).
+        # The frame as decoded. Every overlay mutates in place, and a marked
+        # frame must be stored raw -- annotated pixels are unusable as training
+        # data (FR-12) -- so what is handed out to be drawn on is a copy.
         self._raw_frame: ndarray | None = None
         self._rendered_frame_index: int | None = None
-        # Whether the active mode drew everything it currently has. False means
-        # something is still outstanding -- an unprocessed frame, a detection
-        # not back yet -- and a repaint is due when it arrives.
-        self._overlay_complete = False
 
     def reset(self) -> None:
-        self._history.clear()
         self._clear()
 
     def open(self, cap: FrameCapture, video_path: Path) -> None:
@@ -121,15 +109,6 @@ class MaskRenderCore:
         self._video_key = video_key
 
     # --- what is being looked at --------------------------------------------
-
-    @property
-    def history(self) -> CoverageHistory:
-        """The cumulative track, which the pass appends to as it runs."""
-        return self._history
-
-    @property
-    def mode(self) -> ReviewMode | None:
-        return self._mode
 
     @property
     def video_open(self) -> bool:
@@ -158,7 +137,7 @@ class MaskRenderCore:
 
     @property
     def raw_frame(self) -> ndarray | None:
-        """The displayed frame as decoded, before the mode drew on it."""
+        """The displayed frame as decoded, before anything drew on it."""
         return self._raw_frame
 
     @property
@@ -166,98 +145,19 @@ class MaskRenderCore:
         return self._rendered_frame_index
 
     @property
-    def overlay_complete(self) -> bool:
-        return self._overlay_complete
-
-    @property
-    def showing_judged_frame(self) -> bool:
-        """Whether the active mode's full answer for the current frame is up.
-
-        True only while stopped on a frame that has been drawn with nothing
-        outstanding. Problem reporting mode marks on this, which is why every
-        stored mark is something the researcher actually looked at and no
-        metadata field has to assert it.
-        """
-        return (
-            self._cap is not None
-            and not self._playing
-            and self._rendered_frame_index == self.current_frame_index
-            and self._overlay_complete
-        )
+    def displayed_frame_index(self) -> int:
+        """The frame currently on screen, as opposed to the one seeked to."""
+        return self.position_to_frame_index(self._position)
 
     # --- what changes it ----------------------------------------------------
 
-    def adopt_mode(self, mode: ReviewMode) -> None:
-        """Set the opening mode, with none of :meth:`set_mode`'s consequences.
+    def set_playing(self, value: bool) -> None:
+        """Play or pause.
 
-        For construction only, before there is a video or a frame on screen:
-        there is no previous mode to leave and nothing to force a repaint of.
-        Going through ``set_mode`` there would leave a render already marked as
-        pending, which swallows the first real one.
+        Nothing is scheduled by itself: pausing leaves the same frame on screen,
+        and what resuming should jump to is not this object's to know.
         """
-        self._mode = mode
-
-    def set_playing(self, value: bool) -> bool:
-        """Returns True if the caller should schedule a render now."""
         self._playing = value
-        return self.frame_ready()
-
-    def set_mode(self, mode: ReviewMode) -> bool:
-        """Show the video the way *mode* does from now on.
-
-        Returns True if the caller should schedule a render now. Swapping the
-        mode changes only what is drawn over the frame -- the recorded coverage
-        is untouched, so going back brings the track return with nothing lost.
-        """
-        if mode is self._mode:
-            return False
-        if self._mode is not None:
-            self._mode.left()
-        self._mode = mode
-        mode.entered()
-        # The frame on screen was drawn for the other mode, and neither the
-        # position nor the coverage has changed -- so ask for a repaint
-        # explicitly rather than relying on the usual change detection.
-        self._force_render = True
-        return self._schedule_render()
-
-    def _processed_position(self) -> float:
-        return float(len(self._history) - 1) / self._total_frames
-
-    @property
-    def repaint_due(self) -> bool:
-        """Whether the pass has produced something the screen is not showing.
-
-        Reads state without touching it, so the pass's own thread may ask it
-        directly and only wake the UI when the answer is yes. Applying the
-        answer is :meth:`frame_ready`'s job, on the thread that owns this.
-        """
-        if self._total_frames == 0:
-            return False
-        processed = self._processed_position()
-        if self._playing:
-            return self._cap is not None and self._pending_position != processed
-        return not self._overlay_complete and self._position < processed
-
-    def frame_ready(self) -> bool:
-        """Fold the pass's progress into the render decision.
-
-        Returns True if the caller should schedule a render now. Playback is
-        this too: playing means following the processed frontier, so a frame
-        appended by the pass is what advances the position.
-        """
-        logger.debug(
-            "frame_ready: %d/%d, playing: %s, overlay_complete: %s",
-            len(self._history) - 1,
-            self._total_frames,
-            self._playing,
-            self._overlay_complete,
-        )
-        if not self.repaint_due:
-            return False
-        if self._playing:
-            return self.set_position(self._processed_position())
-        return self._schedule_render()
 
     def set_position(self, new_value: float) -> bool:
         """Returns True if the caller should schedule a render now."""
@@ -273,44 +173,38 @@ class MaskRenderCore:
         self._render_pending = True
         return True
 
-    def render_now(self) -> RenderOutcome:
+    def render_now(
+        self,
+        paint: Callable[[ndarray, int], None] = lambda _image, _index: None,
+        repaint_wanted: bool = False,
+    ) -> RenderOutcome:
         """Produce the frame to display now, if anything has changed.
 
-        Always clears the render-pending flag, even if nothing is rendered,
-        so a later ``set_position``/``frame_ready`` call can schedule again.
+        *paint* draws over the decoded frame in place, and *repaint_wanted* says
+        the painter has something to add that is not up yet -- both come from
+        the caller, which is the only party that knows what is being drawn.
+
+        Always clears the render-pending flag, even if nothing is rendered, so a
+        later ``set_position`` can schedule again.
         """
         try:
-            if (
-                not self._force_render
-                and self._position == self._pending_position
-                and not self._repaint_needed()
-            ):
+            if self._position == self._pending_position and not repaint_wanted:
                 logger.debug("render_now: nothing to render")
                 return _NOTHING_TO_RENDER
             new_value = self._pending_position
             if new_value is None:
-                # A forced repaint can be the very first render of a video, so
+                # A wanted repaint can be the very first render of a video, so
                 # there is no requested position yet -- repaint where we are.
                 new_value = self._position
                 self._pending_position = new_value
             self._position = new_value
-            return self._produce_frame(new_value)
+            return self._produce_frame(new_value, paint)
         finally:
             self._render_pending = False
-            self._force_render = False
 
-    def _repaint_needed(self) -> bool:
-        """True when the frame on screen is missing something it could show.
-
-        The answer is the active mode's: only it knows what it is waiting for.
-        """
-        if self._mode is None:
-            return False
-        return self._mode.repaint_needed(
-            self.position_to_frame_index(self._position), self._overlay_complete
-        )
-
-    def _produce_frame(self, position: float) -> RenderOutcome:
+    def _produce_frame(
+        self, position: float, paint: Callable[[ndarray, int], None]
+    ) -> RenderOutcome:
         capture = self._cap
         if not capture:
             logger.warning("_produce_frame: no video capture available for rendering")
@@ -322,10 +216,9 @@ class MaskRenderCore:
             return RenderOutcome(should_emit=True, image=None)
         img: ndarray = r
         self._rendered_frame_index = frame_idx
-        # Kept before the mode draws anything: a marked frame must be stored
-        # without annotation.
+        # Kept before anything draws: a marked frame must be stored unannotated.
         self._raw_frame = img.copy()
-        self._overlay_complete = self._mode.draw(img, frame_idx) if self._mode is not None else True
+        paint(img, frame_idx)
         return RenderOutcome(should_emit=True, image=img)
 
     # --- naming a frame -----------------------------------------------------

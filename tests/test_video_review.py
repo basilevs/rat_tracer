@@ -19,7 +19,7 @@ from typing import override
 import numpy as np
 import pytest
 from numpy import ndarray
-from rat_tracer import video_review
+from rat_tracer import review_modes, video_review
 from rat_tracer.bad_frames import BadFrameStore, Detection, MarkRequest
 from rat_tracer.mask_render_core import FrameCapture
 from rat_tracer.video_review import ReviewListener, VideoReview
@@ -173,8 +173,9 @@ def pass_collaborators(monkeypatch) -> Callable[[int], None]:
     monkeypatch.setattr(video_review, "video_key", lambda path: _KEY)
     monkeypatch.setattr(video_review, "YOLO", lambda *a, **k: None)
     monkeypatch.setattr(video_review, "model_path", lambda: Path("fake-model.pt"))
-    monkeypatch.setattr(video_review, "load_progress", lambda key: None)
-    monkeypatch.setattr(video_review, "save_progress", lambda history, key: None)
+    # The resume cache belongs to the coverage track, not to the review.
+    monkeypatch.setattr(review_modes, "load_progress", lambda key: None)
+    monkeypatch.setattr(review_modes, "save_progress", lambda history, key: None)
 
     def produce(total: int) -> None:
         def frames(input_video, model, start_frame=0):
@@ -649,6 +650,43 @@ def test_an_interrupted_pass_stops_where_it_was_asked_to(fixture, pass_collabora
     assert seen == stop_after, "the pass must stop being asked once it has stopped"
 
 
+def test_a_seek_ahead_of_the_pass_renders_bare_then_masked(fixture, pass_collaborators):
+    """From repro.log: a seek landing before the pass has reached that frame
+    shows it bare, and the track appears when the pass catches up."""
+    review = fixture.review
+    review.seek(0.55)
+    bare = review.render_frame()
+
+    assert bare.image is not None
+    assert np.array_equal(bare.image, _frame(55)), "nothing processed there yet -- shown bare"
+
+    _run_pass(fixture, pass_collaborators)
+    masked = review.render_frame()
+
+    assert masked.image is not None
+    assert not np.array_equal(masked.image, _frame(55)), "the track lands once the pass arrives"
+
+
+def test_reopening_a_processed_video_while_paused_still_draws(fixture, pass_collaborators):
+    """From repro.log: opening a second, already processed video while paused
+    used to leave the placeholder frame from closing the first one on screen --
+    the flag saying the overlay was complete belonged to the renderer and
+    survived the reset. Nothing outside a mode records that any more."""
+    _run_pass(fixture, pass_collaborators)
+    fixture.review.seek(0.55)
+    fixture.review.render_frame()
+
+    fixture.review.close_video()
+    fixture.review.open_video(_FakeCapture(fixture.total_frames), _VIDEO)
+    fixture.review.set_playing(False)
+    _run_pass(fixture, pass_collaborators)
+    fixture.review.seek(0.55)
+    shown = fixture.review.render_frame()
+
+    assert shown.image is not None, "the second video left the placeholder on screen"
+    assert not np.array_equal(shown.image, _frame(55)), "and its own track is drawn"
+
+
 def test_problem_mode_hides_the_cumulative_track(fixture, pass_collaborators):
     """A red region is the union of every detection so far, so a single
     frame's detection cannot be judged from it at all."""
@@ -682,6 +720,40 @@ def test_leaving_problem_mode_brings_the_track_back_with_nothing_lost(fixture, p
     assert not np.array_equal(shown.image, _frame(frame_index)), (
         "the cumulative track is drawn again, so nothing was lost by leaving it"
     )
+
+
+def test_returning_to_the_track_redraws_a_frame_it_had_already_drawn(fixture, pass_collaborators):
+    """The mode coming back has drawn this frame before, but the other one has
+    painted over it since. Being told it ``left`` is the only thing that tells
+    it so -- there is no forced repaint anywhere to fall back on."""
+    _run_pass(fixture, pass_collaborators)
+    review = fixture.review
+    review.seek(0.5)
+    tracked = review.render_frame()
+    assert tracked.image is not None
+    assert not np.array_equal(tracked.image, _frame(50)), "sanity check: the track is up"
+
+    fixture.detector.detection = Detection()  # nothing to draw, so the track's absence shows
+    fixture.reach_judged_frame()
+    over = fixture.review.render_frame()
+    assert over.image is None or np.array_equal(over.image, _frame(50))
+
+    review.set_problem_mode(False)
+    back = review.render_frame()
+
+    assert back.image is not None, "coverage never redrew the frame it thought it still had up"
+    assert not np.array_equal(back.image, _frame(50)), "the track is back"
+
+
+def test_leaving_problem_mode_while_paused_disables_marking(fixture):
+    """Its detection is no longer what is on screen, so nothing is judged --
+    and nothing but the mode itself is keeping track of that."""
+    fixture.reach_judged_frame()
+    assert fixture.review.can_mark
+
+    fixture.review.set_problem_mode(False)
+
+    assert not fixture.review.can_mark
 
 
 def test_a_frame_the_pass_has_not_reached_still_gets_its_detection(fixture):

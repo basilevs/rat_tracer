@@ -24,6 +24,7 @@ import pytest
 from PySide6.QtCore import QMetaObject, QObject, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QVideoSink
+from rat_tracer import review_modes
 from rat_tracer import ui as ui_module
 from rat_tracer import video_review as review_module
 from rat_tracer.bad_frames import STORAGE_ENV_VAR, BadFrameStore, Detection
@@ -105,9 +106,10 @@ def harness(monkeypatch, tmp_path):
     monkeypatch.setattr(review_module, "YOLO", lambda *a, **k: None)
     monkeypatch.setattr(review_module, "model_path", lambda: Path("fake-model.pt"))
     monkeypatch.setattr(review_module, "presence_frames", fake_presence_frames)
-    monkeypatch.setattr(review_module, "load_progress", cache.get)
+    # The resume cache belongs to the coverage track, not to the review.
+    monkeypatch.setattr(review_modes, "load_progress", cache.get)
     monkeypatch.setattr(
-        review_module,
+        review_modes,
         "save_progress",
         lambda history, key: cache.__setitem__(key, pickle.loads(pickle.dumps(history))),
     )

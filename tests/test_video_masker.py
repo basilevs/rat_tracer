@@ -42,6 +42,7 @@ import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtMultimedia import QVideoSink
+from rat_tracer import review_modes
 from rat_tracer import ui as ui_module
 from rat_tracer import video_review as review_module
 from rat_tracer.bad_frames import STORAGE_ENV_VAR
@@ -144,9 +145,10 @@ def worker_harness(monkeypatch, tmp_path):
     monkeypatch.setattr(review_module, "YOLO", lambda *a, **k: None)
     monkeypatch.setattr(review_module, "model_path", lambda: Path("fake-model.pt"))
     monkeypatch.setattr(review_module, "presence_frames", fake_presence_frames)
-    monkeypatch.setattr(review_module, "load_progress", cache_store.get)
+    # The resume cache belongs to the coverage track, not to the review.
+    monkeypatch.setattr(review_modes, "load_progress", cache_store.get)
     monkeypatch.setattr(
-        review_module,
+        review_modes,
         "save_progress",
         # Snapshot via a pickle round-trip, like the real disk-backed cache: a
         # stored reference to the live CoverageHistory would let later mutations

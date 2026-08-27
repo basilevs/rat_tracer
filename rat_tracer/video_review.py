@@ -25,7 +25,7 @@ from rat_tracer.frame_detector import FrameDetector
 from rat_tracer.lib import model_path
 from rat_tracer.mask_render_core import FrameCapture, MaskRenderCore, RenderOutcome
 from rat_tracer.paint import presence_frames
-from rat_tracer.progress_cache import load_progress, save_progress, video_key
+from rat_tracer.progress_cache import video_key
 from rat_tracer.review_listener import ReviewListener
 from rat_tracer.review_modes import CoverageMode, ProblemReportMode, ReviewMode
 
@@ -70,7 +70,7 @@ class VideoReview:
     ):
         self.listener = listener if listener is not None else ReviewListener()
         self._render = MaskRenderCore()
-        self._coverage = CoverageMode(self._render.history)
+        self._coverage = CoverageMode(frontier_moved=self._frontier_moved)
         self._problem = ProblemReportMode(
             view=self._render,
             executor=executor,
@@ -78,7 +78,9 @@ class VideoReview:
             detector=detector,
             store=store,
         )
-        self._render.adopt_mode(self._coverage)
+        #: Which way the video is being looked at. The renderer is not told:
+        #: it decodes frames and has no idea anything is drawn over them.
+        self._mode: ReviewMode = self._coverage
         #: Set by the pass's thread, consumed by the next render. Following the
         #: processed frontier has to be something the pass *did*, not something
         #: a render polls for -- polling would drag playback back to the
@@ -96,6 +98,7 @@ class VideoReview:
         self._pass_advanced_since_render.clear()
         self._render.reset()
         self._problem.forget_video()
+        self._coverage.forget()
         self._select(self._coverage)
         self.listener.changed()
 
@@ -109,9 +112,9 @@ class VideoReview:
         """Run the cumulative pass over the open video, until it ends or stops.
 
         Blocking, and the only method here meant to be called from another
-        thread. It touches the coverage history, which is lock-guarded, and
-        reports progress through the listener -- never the renderer, whose state
-        belongs to the thread that navigates.
+        thread. It hands each frame to the coverage track, which is lock-guarded
+        -- never to the renderer, whose state belongs to the thread that
+        navigates.
 
         *is_interrupted* is asked between frames. Saying yes saves what has been
         computed so far and returns, so reopening the video resumes rather than
@@ -129,45 +132,40 @@ class VideoReview:
         self._render.identify(key)
         self.listener.changed()
 
-        history = self._render.history
-        loaded = load_progress(key)
-        if loaded is not None:
-            history.replace_with(loaded)
-            self._pass_advanced()
-        start_frame = len(history)
+        coverage = self._coverage
+        coverage.resume(key)
+        start_frame = coverage.processed_frames
         logger.info("Starting from frame %d", start_frame)
         model = YOLO(model_path())
         for _frame, mask in presence_frames(path, model=model, start_frame=start_frame):
-            history.append(mask)
+            coverage.record(mask)
             if is_interrupted():
-                save_progress(history, key)
+                coverage.save(key)
                 return
-            self._pass_advanced()
-        self._pass_advanced()
-        save_progress(history, key)
+        coverage.save(key)
         logger.info("Finished processing video: %s in %.2f seconds", path, time() - started)
 
-    def _pass_advanced(self) -> None:
-        """The pass appended a frame -- on the pass's own thread.
+    def _frontier_moved(self, frame_index: int) -> None:
+        """The pass processed another frame -- on the pass's own thread.
 
         Nothing the pass produces is on screen in problem reporting mode, so its
         progress is not a reason to wake the UI there. Otherwise the listener
-        hears about it only once the frontier has actually overtaken what is
-        displayed; what to do about that is decided in :meth:`render_frame`,
-        back on the thread that owns the renderer.
+        hears about it only when it would change something: playing means
+        following the frontier, and paused means only that the track has now
+        reached the frame being looked at. Acting on it happens in
+        :meth:`render_frame`, back on the thread that owns the renderer.
         """
         if self.problem_mode:
             return
         self._pass_advanced_since_render.set()
-        if not self._render.repaint_due:
-            return
-        self.listener.changed()
+        if self.playing or self._coverage.repaint_needed(self._render.displayed_frame_index):
+            self.listener.changed()
 
     # --- mode selection -----------------------------------------------------
 
     @property
     def problem_mode(self) -> bool:
-        return self._render.mode is self._problem
+        return self._mode is self._problem
 
     def set_problem_mode(self, value: bool) -> None:
         """Enter or leave problem reporting mode.
@@ -183,8 +181,20 @@ class VideoReview:
         self.listener.changed()
 
     def _select(self, mode: ReviewMode) -> None:
-        if self._render.set_mode(mode):
-            self.listener.changed()
+        """Show the video the way *mode* does from now on.
+
+        Nothing has to force a repaint: telling the outgoing mode it has ``left``
+        clears its record of what is on screen, and the incoming one has no
+        record of the current frame either, so it asks to draw of its own
+        accord. The recorded coverage is untouched, so going back brings the
+        track return with nothing lost.
+        """
+        if mode is self._mode:
+            return
+        self._mode.left()
+        self._mode = mode
+        mode.entered()
+        self.listener.changed()
 
     # --- navigation ---------------------------------------------------------
 
@@ -203,6 +213,11 @@ class VideoReview:
         if value and self.problem_mode:
             self._select(self._coverage)
         self._render.set_playing(value)
+        if value:
+            # Resuming catches up with the pass now, rather than sitting still
+            # until it happens to produce another frame -- or forever, if it has
+            # already finished.
+            self._pass_advanced_since_render.set()
         self.listener.changed()
 
     @property
@@ -250,27 +265,34 @@ class VideoReview:
         """
         if self._pass_advanced_since_render.is_set():
             # The pass appended frames on its own thread and could not act on
-            # them there. Acting on them is what draws the growing track, and
-            # what makes playback follow the frontier.
+            # them there. Playing means following the frontier, so acting on
+            # them is what advances playback.
             self._pass_advanced_since_render.clear()
-            self._render.frame_ready()
-        outcome = self._render.render_now()
+            self._follow_frontier()
+        outcome = self._render.render_now(
+            paint=self._mode.draw,
+            repaint_wanted=self._mode.repaint_needed(self._render.displayed_frame_index),
+        )
         if self.problem_mode:
             # The newly drawn frame may be one nobody has asked about yet. What
             # is worth asking, and what to do with the answer, is the mode's.
             self._problem.request_detection()
         return outcome
 
+    def _follow_frontier(self) -> None:
+        """Playing means watching the pass work, one processed frame behind."""
+        if not self.playing:
+            return
+        frontier = self._coverage.frontier
+        if frontier is None:
+            return
+        self._render.set_position(self._render.frame_index_to_position(frontier))
+
     # --- marking ------------------------------------------------------------
 
     @property
-    def _showing_judged_frame(self) -> bool:
-        """Whether a detection result is actually displayed right now."""
-        return self.problem_mode and self._render.showing_judged_frame
-
-    @property
     def can_mark(self) -> bool:
-        return self._problem.can_mark(self._showing_judged_frame)
+        return self._problem.can_mark
 
     @property
     def frame_marked(self) -> bool:
@@ -284,9 +306,9 @@ class VideoReview:
         re-derived in the UI from a tick a click has already flipped.
         """
         if self.frame_marked:
-            self._problem.unmark(self._showing_judged_frame)
+            self._problem.unmark()
         else:
-            self._problem.mark(self._showing_judged_frame)
+            self._problem.mark()
         # Even a refused click refreshes the control: it flips its own tick, so
         # it has to be sent back to reporting what is on disk.
         self.listener.changed()

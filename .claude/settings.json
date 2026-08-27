@@ -19,7 +19,8 @@
       "Bash(make format *)",
       "Bash(make check *)",
       "Bash(.venv/bin/python -m pytest tests/test_background.py -q)",
-      "Bash(.venv/bin/python -m pytest tests -q)"
+      "Bash(.venv/bin/python -m pytest tests -q)",
+      "Bash(.venv/bin/python -m pytest tests/test_video_review.py -q)"
     ]
   },
   "enabledPlugins": {

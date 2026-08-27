@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QDeadlineTimer, QEventLoop
 from PySide6.QtGui import QGuiApplication
+from rat_tracer import review_modes
 from rat_tracer import video_review as review_module
 from rat_tracer.background import InlineExecutor
 from rat_tracer.mask_render_core import FrameCapture
@@ -206,9 +207,10 @@ def _fake_pass_collaborators(monkeypatch, frames: int, on_save=None, gate=None) 
     monkeypatch.setattr(review_module, "video_key", lambda path: "cafe1234")
     monkeypatch.setattr(review_module, "YOLO", lambda *a, **k: None)
     monkeypatch.setattr(review_module, "model_path", lambda: Path("fake-model.pt"))
-    monkeypatch.setattr(review_module, "load_progress", lambda key: None)
+    # The resume cache belongs to the coverage track, not to the review.
+    monkeypatch.setattr(review_modes, "load_progress", lambda key: None)
     monkeypatch.setattr(
-        review_module,
+        review_modes,
         "save_progress",
         lambda history, key: on_save(key) if on_save is not None else None,
     )
@@ -294,8 +296,8 @@ def test_the_pass_stops_when_it_is_asked_to_and_is_joined(qapp, monkeypatch):
     monkeypatch.setattr(review_module, "video_key", lambda path: "cafe1234")
     monkeypatch.setattr(review_module, "YOLO", lambda *a, **k: None)
     monkeypatch.setattr(review_module, "model_path", lambda: Path("fake-model.pt"))
-    monkeypatch.setattr(review_module, "load_progress", lambda key: None)
-    monkeypatch.setattr(review_module, "save_progress", lambda history, key: saved.append(key))
+    monkeypatch.setattr(review_modes, "load_progress", lambda key: None)
+    monkeypatch.setattr(review_modes, "save_progress", lambda history, key: saved.append(key))
     monkeypatch.setattr(review_module, "presence_frames", frames)
 
     review = VideoReview()
