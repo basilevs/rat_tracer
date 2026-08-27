@@ -156,3 +156,40 @@ def test_the_slider_does_not_take_keyboard_focus(qapp, window):
 
     assert not slider.property("activeFocusOnTab")
     assert not slider.property("activeFocus")
+
+
+def test_the_play_control_follows_the_backend_when_it_pauses_itself(qapp, window):
+    """Regression: the button used to read a copy of ``playing`` kept in QML,
+    which only ever heard about the times the researcher was the one who asked.
+    The review pauses itself too -- stepping a frame, entering problem
+    reporting mode, and (until this was fixed) opening a file resumed it -- and
+    the button would then offer to start a video that was already running, and
+    do nothing when pressed."""
+    strings = resolve_translations("en")
+    masker = window.findChild(VideoMasker)
+    button = _find(window, "playPauseButton")
+    assert masker.playing, "sanity check: a fresh window is playing"
+    assert button.property("text") == strings["pause_button"]
+
+    # Something only the backend knows about pauses the review.
+    masker.problem_mode = True
+    qapp.processEvents()
+
+    assert not masker.playing, "sanity check: problem reporting mode pauses"
+    assert button.property("text") == strings["play_button"], (
+        "the button is still offering to pause a video that is already stopped"
+    )
+
+
+def test_the_play_control_starts_and_stops_the_backend(qapp, window):
+    masker = window.findChild(VideoMasker)
+    button = _find(window, "playPauseButton")
+    assert masker.playing
+
+    QMetaObject.invokeMethod(button, "clicked")
+    qapp.processEvents()
+    assert not masker.playing, "one press must stop playback"
+
+    QMetaObject.invokeMethod(button, "clicked")
+    qapp.processEvents()
+    assert masker.playing, "and the next must start it again"

@@ -138,6 +138,7 @@ class VideoReview:
     ):
         self.listener = listener if listener is not None else ReviewListener()
         self._video = VideoFile()
+        self._playing = True
         self._reset_position()
         self._coverage = CoverageMode(frontier_moved=self._frontier_moved)
         self._problem = ProblemReportMode(
@@ -157,15 +158,18 @@ class VideoReview:
         self._pass_advanced_since_render = Event()
 
     def _reset_position(self) -> None:
-        """Where the researcher is, and where the screen has got to.
+        """Send the next video back to its beginning.
 
         Two values rather than one, because a seek does not take effect when it
         is asked for -- it takes effect at the next render, which is what
         collapses a drag across the slider into a single decode. ``_shown`` is
         None until something has actually been drawn, which is what makes the
         first render of a video happen without a special case for it.
+
+        Deliberately not playback: a researcher who paused stays paused through
+        opening the next file, and silently resuming would leave every control
+        that reads ``playing`` describing the opposite of what is happening.
         """
-        self._playing = True
         self._wanted = 0.0
         self._shown: float | None = None
 

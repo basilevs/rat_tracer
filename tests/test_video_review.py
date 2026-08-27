@@ -589,6 +589,21 @@ def test_stepping_twice_before_a_render_moves_two_frames(fixture):
     assert fixture.review.frame_index == start + 2
 
 
+def test_opening_a_video_does_not_resume_playback(fixture):
+    """A researcher who paused stays paused through opening the next file.
+
+    Resuming silently is worse than it sounds: nothing tells the controls, so
+    the button goes on offering to start a video that is already running, and
+    pressing it does nothing.
+    """
+    fixture.review.set_playing(False)
+
+    fixture.review.close_video()
+    fixture.review.open_video(_FakeCapture(fixture.total_frames), _VIDEO)
+
+    assert not fixture.review.playing
+
+
 def test_a_new_video_starts_at_the_beginning(fixture):
     """Regression: the requested position used to survive the close, so the
     next video opened wherever the last one was left."""

@@ -168,6 +168,10 @@ class VideoMasker(QObject):
     position_changed = Signal(float)
     video_changed = Signal(str)
     problem_mode_changed = Signal(bool)
+    #: The review pauses itself -- stepping a frame, entering problem reporting
+    #: mode -- so the control that shows playback has to follow it rather than
+    #: keep its own idea of the answer.
+    playing_changed = Signal(bool)
     mark_state_changed = Signal()
     #: Emitted with the frame index once a mark is safely on disk.
     mark_saved = Signal(int)
@@ -206,6 +210,7 @@ class VideoMasker(QObject):
         self._schedule_render()
         self.mark_state_changed.emit()
         self.problem_mode_changed.emit(self._review.problem_mode)
+        self.playing_changed.emit(self._review.playing)
 
     def _emit_frame(self, frame: QVideoFrame) -> None:
         masker_logger.debug("_emit_frame: emitting frame (empty=%s)", not frame.isValid())
@@ -300,7 +305,7 @@ class VideoMasker(QObject):
         masker_logger.debug("_set_playing: %s", value)
         self._review.set_playing(value)
 
-    playing = Property(bool, _get_playing, _set_playing)
+    playing = Property(bool, _get_playing, _set_playing, notify=playing_changed)
 
     @Property(str, notify=position_changed)
     def time_text(self) -> str:

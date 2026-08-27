@@ -16,14 +16,15 @@ ApplicationWindow {
     visible: true
     Material.theme: Material.Dark
     Material.accent: Material.Red
-    property bool playing: true
+    // Playback is the backend's to know, not this window's. The review pauses
+    // itself -- stepping a frame, entering problem reporting mode, opening a
+    // file -- and a copy kept here could only ever be told about the times the
+    // researcher was the one who asked.
     VideoMasker {
         id: "masker"
-        playing: page.playing
         video_output: videoOutput
         onMark_saved: (frameIndex) => toast.show(tr.mark_saved_toast.replace("{index}", frameIndex), true)
         onMark_failed: (frameIndex) => toast.show(tr.mark_failed_toast.replace("{index}", frameIndex), false)
-        onProblem_mode_changed: (active) => { if (active) page.playing = false }
     }
 
     // Marking never navigates and never blocks: the researcher can seek or
@@ -76,7 +77,7 @@ ApplicationWindow {
             MouseArea {
                 anchors.fill: parent
                 onClicked: {
-                    page.playing = !page.playing
+                    masker.playing = !masker.playing
                 }
             }
             DropArea {
@@ -98,7 +99,7 @@ ApplicationWindow {
             focusPolicy: Qt.NoFocus
             onMoved: {
                 masker.position = slider.value;
-                page.playing = false;
+                masker.playing = false;
             }
             value: masker.position
         }
@@ -116,10 +117,11 @@ ApplicationWindow {
                 onClicked: fileDialog.open()
             }
             Button {
-                text: page.playing ? tr.pause_button : tr.play_button
+                objectName: "playPauseButton"
+                text: masker.playing ? tr.pause_button : tr.play_button
                 Layout.alignment: Qt.AlignHCenter
                 onClicked: {
-                    page.playing = !page.playing
+                    masker.playing = !masker.playing
                 }
             }
             Button {
