@@ -12,26 +12,94 @@ loop.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
 from threading import Event
 from time import time
 
+from numpy import ndarray
 from ultralytics import YOLO
 
 from rat_tracer.background import BackgroundExecutor
 from rat_tracer.bad_frames import BadFrameStore
 from rat_tracer.frame_detector import FrameDetector
 from rat_tracer.lib import model_path
-from rat_tracer.mask_render_core import FrameCapture, MaskRenderCore, RenderOutcome
 from rat_tracer.paint import presence_frames
 from rat_tracer.progress_cache import video_key
 from rat_tracer.review_listener import ReviewListener
 from rat_tracer.review_modes import CoverageMode, ProblemReportMode, ReviewMode
+from rat_tracer.video_file import FrameCapture, VideoFile
 
 logger = getLogger(__name__)
 
-__all__ = ["ReviewListener", "VideoReview"]
+__all__ = ["RenderOutcome", "ReviewListener", "VideoReview"]
+
+
+@dataclass(frozen=True)
+class RenderOutcome:
+    """Result of :meth:`VideoReview.render_frame`.
+
+    ``should_emit`` distinguishes "nothing changed, leave the current frame
+    on screen" (False) from "show something now" (True). When ``should_emit``
+    is True, ``image`` is either the frame to display or ``None`` for an
+    empty/placeholder frame -- three states that a plain ``ndarray | None``
+    can't express on its own.
+    """
+
+    should_emit: bool
+    image: ndarray | None = None
+
+
+_NOTHING_TO_RENDER = RenderOutcome(should_emit=False)
+
+
+class _ModeView:
+    """What a mode may know about the video being looked at.
+
+    Assembled from both halves: the facts about the file come from
+    :class:`~rat_tracer.video_file.VideoFile`, and where the researcher is and
+    whether they are playing come from the review. Its own small object so that
+    ``VideoReview``'s API stays the vocabulary of reviewing a video, rather than
+    growing five members that only a mode ever needed.
+    """
+
+    def __init__(
+        self,
+        video: VideoFile,
+        frame_index: Callable[[], int],
+        playing: Callable[[], bool],
+    ):
+        self._video = video
+        self._frame_index = frame_index
+        self._playing = playing
+
+    @property
+    def video_path(self) -> Path | None:
+        return self._video.path
+
+    @property
+    def video_key(self) -> str | None:
+        return self._video.key
+
+    @property
+    def current_frame_index(self) -> int:
+        return self._frame_index()
+
+    @property
+    def rendered_frame_index(self) -> int | None:
+        return self._video.decoded_frame_index
+
+    @property
+    def raw_frame(self) -> ndarray | None:
+        return self._video.raw_frame
+
+    @property
+    def playing(self) -> bool:
+        return self._playing()
+
+    def timestamp_ms(self, frame_index: int) -> int:
+        return self._video.timestamp_ms(frame_index)
 
 
 class VideoReview:
@@ -69,16 +137,17 @@ class VideoReview:
         store: BadFrameStore | None = None,
     ):
         self.listener = listener if listener is not None else ReviewListener()
-        self._render = MaskRenderCore()
+        self._video = VideoFile()
+        self._reset_position()
         self._coverage = CoverageMode(frontier_moved=self._frontier_moved)
         self._problem = ProblemReportMode(
-            view=self._render,
+            view=_ModeView(self._video, lambda: self._frame_index, lambda: self._playing),
             executor=executor,
             listener=self.listener,
             detector=detector,
             store=store,
         )
-        #: Which way the video is being looked at. The renderer is not told:
+        #: Which way the video is being looked at. The video file is not told:
         #: it decodes frames and has no idea anything is drawn over them.
         self._mode: ReviewMode = self._coverage
         #: Set by the pass's thread, consumed by the next render. Following the
@@ -87,16 +156,30 @@ class VideoReview:
         #: frontier every time, and a seek made while playing would never stick.
         self._pass_advanced_since_render = Event()
 
+    def _reset_position(self) -> None:
+        """Where the researcher is, and where the screen has got to.
+
+        Two values rather than one, because a seek does not take effect when it
+        is asked for -- it takes effect at the next render, which is what
+        collapses a drag across the slider into a single decode. ``_shown`` is
+        None until something has actually been drawn, which is what makes the
+        first render of a video happen without a special case for it.
+        """
+        self._playing = True
+        self._wanted = 0.0
+        self._shown: float | None = None
+
     # --- the video ----------------------------------------------------------
 
     def open_video(self, cap: FrameCapture, video_path: Path) -> None:
         """Show *video_path*. Nothing may be marked until the pass names it."""
-        self._render.open(cap, video_path)
+        self._video.open(cap, video_path)
         self.listener.changed()
 
     def close_video(self) -> None:
         self._pass_advanced_since_render.clear()
-        self._render.reset()
+        self._video.close()
+        self._reset_position()
         self._problem.forget_video()
         self._coverage.forget()
         self._select(self._coverage)
@@ -104,7 +187,7 @@ class VideoReview:
 
     @property
     def video_open(self) -> bool:
-        return self._render.video_open
+        return self._video.is_open
 
     # --- the cumulative pass ------------------------------------------------
 
@@ -113,14 +196,13 @@ class VideoReview:
 
         Blocking, and the only method here meant to be called from another
         thread. It hands each frame to the coverage track, which is lock-guarded
-        -- never to the renderer, whose state belongs to the thread that
-        navigates.
+        -- never to the position, which belongs to the thread that navigates.
 
         *is_interrupted* is asked between frames. Saying yes saves what has been
         computed so far and returns, so reopening the video resumes rather than
         restarts -- which is also what the cache on disk is for.
         """
-        path = self._render.video_path
+        path = self._video.path
         if path is None:
             return
         started = time()
@@ -129,7 +211,7 @@ class VideoReview:
         # whoever opened the video. Marks are stored under this key, so nothing
         # can be marked until it lands -- which is why the UI is told at once.
         key = video_key(path)
-        self._render.identify(key)
+        self._video.identify(key)
         self.listener.changed()
 
         coverage = self._coverage
@@ -153,12 +235,13 @@ class VideoReview:
         hears about it only when it would change something: playing means
         following the frontier, and paused means only that the track has now
         reached the frame being looked at. Acting on it happens in
-        :meth:`render_frame`, back on the thread that owns the renderer.
+        :meth:`render_frame`, back on the thread that navigates.
         """
         if self.problem_mode:
             return
         self._pass_advanced_since_render.set()
-        if self.playing or self._coverage.repaint_needed(self._render.displayed_frame_index):
+        shown = self._shown_frame_index
+        if self._playing or shown is None or self._coverage.repaint_needed(shown):
             self.listener.changed()
 
     # --- mode selection -----------------------------------------------------
@@ -200,7 +283,7 @@ class VideoReview:
 
     @property
     def playing(self) -> bool:
-        return self._render.playing
+        return self._playing
 
     def set_playing(self, value: bool) -> None:
         """Play or pause.
@@ -212,7 +295,7 @@ class VideoReview:
         """
         if value and self.problem_mode:
             self._select(self._coverage)
-        self._render.set_playing(value)
+        self._playing = value
         if value:
             # Resuming catches up with the pass now, rather than sitting still
             # until it happens to produce another frame -- or forever, if it has
@@ -222,11 +305,20 @@ class VideoReview:
 
     @property
     def position(self) -> float:
-        return self._render.position
+        """Where the video is, as the slider shows it.
+
+        The frame on screen once one has been drawn, and where the researcher
+        asked to be before that -- so the slider never jumps back to zero while
+        the first frame is being decoded.
+        """
+        return self._shown if self._shown is not None else self._wanted
 
     def seek(self, position: float) -> None:
-        if self._render.set_position(position):
-            self.listener.changed()
+        if position == self._wanted:
+            return
+        self._wanted = position
+        logger.debug("seek: %.3f", position)
+        self.listener.changed()
 
     def step(self, delta: int) -> None:
         """Move exactly *delta* frames, pausing playback.
@@ -234,22 +326,34 @@ class VideoReview:
         Stepping is how a defect is reached at all: the normalized slider
         cannot reliably land on one frame at ordinary frame rates.
         """
-        target = self._render.step_frame(delta)
-        if target is None:
+        # From where the researcher asked to be, not from what is on screen, so
+        # stepping twice before either render lands still moves two frames.
+        target = self._frame_index + delta
+        if target < 0 or target >= self._video.frame_count:
             return
         self.set_playing(False)
-        self.seek(target)
+        self.seek(self._video.position_of(target))
+
+    @property
+    def _frame_index(self) -> int:
+        """The frame the researcher is on, seek included."""
+        return self._video.frame_index_at(self._wanted)
+
+    @property
+    def _shown_frame_index(self) -> int | None:
+        """The frame on screen, or None while nothing has been drawn yet."""
+        return self._video.frame_index_at(self._shown) if self._shown is not None else None
 
     @property
     def frame_index(self) -> int:
-        return self._render.current_frame_index if self.video_open else 0
+        return self._frame_index if self.video_open else 0
 
     @property
     def time_text(self) -> str:
         """The displayed frame's position in the recording as HH:MM:SS."""
         if not self.video_open:
             return "00:00:00"
-        elapsed_seconds = self._render.timestamp_ms(self._render.current_frame_index) // 1000
+        elapsed_seconds = self._video.timestamp_ms(self._frame_index) // 1000
         hours, rem = divmod(elapsed_seconds, 3600)
         minutes, seconds = divmod(rem, 60)
         return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
@@ -261,7 +365,9 @@ class VideoReview:
 
         The one entry point for everything that may have moved since the last
         one: a seek, a mode change, or the cumulative pass advancing on its own
-        thread while nobody was looking.
+        thread while nobody was looking. Deciding whether anything has is the
+        whole of the coalescing -- a drag across the slider is many seeks and
+        one decode, because only this moves ``_shown`` up to ``_wanted``.
         """
         if self._pass_advanced_since_render.is_set():
             # The pass appended frames on its own thread and could not act on
@@ -269,24 +375,37 @@ class VideoReview:
             # them is what advances playback.
             self._pass_advanced_since_render.clear()
             self._follow_frontier()
-        outcome = self._render.render_now(
-            paint=self._mode.draw,
-            repaint_wanted=self._mode.repaint_needed(self._render.displayed_frame_index),
-        )
+        outcome = self._decode_if_due()
         if self.problem_mode:
-            # The newly drawn frame may be one nobody has asked about yet. What
-            # is worth asking, and what to do with the answer, is the mode's.
+            # Whatever is on screen may be a frame nobody has asked about yet --
+            # including one whose first request failed, which is why this does
+            # not hang off having just drawn something. What is worth asking,
+            # and what to do with the answer, is the mode's.
             self._problem.request_detection()
         return outcome
 
+    def _decode_if_due(self) -> RenderOutcome:
+        shown = self._shown_frame_index
+        if self._shown == self._wanted and not (
+            shown is not None and self._mode.repaint_needed(shown)
+        ):
+            logger.debug("render_frame: nothing to render")
+            return _NOTHING_TO_RENDER
+        self._shown = self._wanted
+        frame_index = self._frame_index
+        image = self._video.decode(frame_index)
+        if image is not None:
+            self._mode.draw(image, frame_index)
+        return RenderOutcome(should_emit=True, image=image)
+
     def _follow_frontier(self) -> None:
         """Playing means watching the pass work, one processed frame behind."""
-        if not self.playing:
+        if not self._playing:
             return
         frontier = self._coverage.frontier
         if frontier is None:
             return
-        self._render.set_position(self._render.frame_index_to_position(frontier))
+        self._wanted = self._video.position_of(frontier)
 
     # --- marking ------------------------------------------------------------
 

@@ -58,8 +58,8 @@ type Retraction = tuple[str, int, str]
 class VideoView(Protocol):
     """What a mode may know about the video being looked at.
 
-    Satisfied by :class:`~rat_tracer.mask_render_core.MaskRenderCore`, which
-    owns the position and the decoding; a mode only reads from it.
+    Assembled by the review from the open file and its own position; a mode only
+    reads from it, and never learns which half any answer came from.
     """
 
     @property

@@ -33,8 +33,8 @@ from PySide6.QtWidgets import QApplication
 from rat_tracer.background import Job
 from rat_tracer.bad_frames import BadFrameStore, configure_application_identity
 from rat_tracer.frame_detector import YoloFrameDetector
-from rat_tracer.mask_render_core import FrameCapture
 from rat_tracer.translations import resolve_translations
+from rat_tracer.video_file import FrameCapture
 from rat_tracer.video_review import ReviewListener, VideoReview
 
 logger = getLogger(__name__)

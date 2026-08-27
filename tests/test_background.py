@@ -23,8 +23,8 @@ from PySide6.QtGui import QGuiApplication
 from rat_tracer import review_modes
 from rat_tracer import video_review as review_module
 from rat_tracer.background import InlineExecutor
-from rat_tracer.mask_render_core import FrameCapture
 from rat_tracer.ui import CoveragePass, QtBackgroundExecutor
+from rat_tracer.video_file import FrameCapture
 from rat_tracer.video_review import VideoReview
 
 _TIMEOUT_S = 5.0

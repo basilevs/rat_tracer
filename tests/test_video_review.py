@@ -8,7 +8,7 @@ up: ``process_video`` is called directly, with its collaborators faked, rather
 than given a thread.
 
 That is the point of the class. These decisions used to be split between
-``VideoMasker`` and ``MaskRenderCore`` and could only be exercised through a
+``VideoMasker`` and the render core and could only be exercised through a
 Qt harness with faked threads.
 """
 
@@ -21,7 +21,7 @@ import pytest
 from numpy import ndarray
 from rat_tracer import review_modes, video_review
 from rat_tracer.bad_frames import BadFrameStore, Detection, MarkRequest
-from rat_tracer.mask_render_core import FrameCapture
+from rat_tracer.video_file import FrameCapture
 from rat_tracer.video_review import ReviewListener, VideoReview
 
 from queued_executor import QueuedExecutor
@@ -44,6 +44,8 @@ class _FakeCapture(FrameCapture):
     def __init__(self, total_frames: int = 100, fps: float = 25.0):
         self.total_frames = total_frames
         self.fps_value = fps
+        #: Every frame actually decoded, so a test can count them.
+        self.reads: list[int] = []
 
     def frame_count(self) -> int:
         return self.total_frames
@@ -53,6 +55,7 @@ class _FakeCapture(FrameCapture):
 
     @override
     def read(self, frame_idx: int) -> ndarray | None:
+        self.reads.append(frame_idx)
         return _frame(frame_idx)
 
 
@@ -139,16 +142,17 @@ class _Review:
         self.store = _FakeStore()
         self.executor = QueuedExecutor()
         self.total_frames = total_frames
+        self.capture = _FakeCapture(total_frames)
         self.review = VideoReview(
             listener=self.events.listener(),
             executor=self.executor,
             detector=self.detector,
             store=self.store,
         )
-        self.review.open_video(_FakeCapture(total_frames), _VIDEO)
+        self.review.open_video(self.capture, _VIDEO)
         # In production the fingerprint is the pass's first act; every test
         # below wants a video that can already be marked.
-        self.review._render.identify(_KEY)
+        self.review._video.identify(_KEY)
         self.review.set_playing(False)
 
     def reach_judged_frame(self, position: float = 0.5) -> int:
@@ -376,7 +380,7 @@ def test_nothing_may_be_marked_until_the_pass_has_named_the_video(fixture):
     review.render_frame()
 
     assert not review.can_mark, "no fingerprint yet, so nowhere to file the mark"
-    review._render.identify(_KEY)
+    review._video.identify(_KEY)
     assert review.can_mark
 
 
@@ -534,6 +538,71 @@ def test_undo_without_a_mark_does_nothing(fixture):
     assert fixture.store.removed == []
 
 
+# --- seeking, and what it costs ---------------------------------------------
+
+
+def test_a_drag_across_the_slider_decodes_one_frame(fixture):
+    """The whole of the coalescing: a seek does not take effect when it is
+    asked for, it takes effect at the next render. Dragging produces a seek per
+    mouse move, and decoding every one of them would make the slider unusable."""
+    for position in (0.1, 0.2, 0.3, 0.4, 0.5):
+        fixture.review.seek(position)
+
+    fixture.review.render_frame()
+
+    assert fixture.capture.reads == [50], "one decode, at the position landed on"
+    assert fixture.review.frame_index == 50
+
+
+def test_nothing_is_decoded_when_nothing_has_moved(fixture):
+    fixture.review.seek(0.5)
+    fixture.review.render_frame()
+
+    again = fixture.review.render_frame()
+
+    assert not again.should_emit
+    assert fixture.capture.reads == [50], "the same frame must not be decoded twice"
+
+
+def test_the_readout_follows_the_seek_before_the_frame_catches_up(fixture):
+    """The index names where the researcher is, not what has been drawn -- a
+    detection is requested for the frame just seeked to."""
+    fixture.review.seek(0.5)
+    fixture.review.render_frame()
+
+    fixture.review.seek(0.9)
+
+    assert fixture.review.frame_index == 90, "the readout has moved"
+    assert fixture.capture.reads == [50], "but nothing has been decoded for it yet"
+
+
+def test_stepping_twice_before_a_render_moves_two_frames(fixture):
+    """Stepping counts from where the researcher asked to be, not from what is
+    on screen, so a quick double step is not swallowed by the pending render."""
+    fixture.review.seek(0.5)
+    fixture.review.render_frame()
+    start = fixture.review.frame_index
+
+    fixture.review.step(1)
+    fixture.review.step(1)
+
+    assert fixture.review.frame_index == start + 2
+
+
+def test_a_new_video_starts_at_the_beginning(fixture):
+    """Regression: the requested position used to survive the close, so the
+    next video opened wherever the last one was left."""
+    fixture.review.seek(0.9)
+    fixture.review.render_frame()
+    assert fixture.review.frame_index == 90
+
+    fixture.review.close_video()
+    fixture.review.open_video(_FakeCapture(fixture.total_frames), _VIDEO)
+
+    assert fixture.review.frame_index == 0, "video1's position must not be inherited"
+    assert fixture.review.position == 0.0
+
+
 # --- navigation and readouts ------------------------------------------------
 
 
@@ -593,7 +662,7 @@ def test_closing_a_video_forgets_its_marks_and_answers(fixture):
     assert fixture.store.removed == [], "a closed video's Undo has nothing to act on"
 
     fixture.review.open_video(_FakeCapture(fixture.total_frames), _VIDEO)
-    fixture.review._render.identify(_KEY)
+    fixture.review._video.identify(_KEY)
     fixture.review.set_playing(False)
     fixture.reach_judged_frame()
     assert len(fixture.detector.images) > asked, "the answers went with the video"
