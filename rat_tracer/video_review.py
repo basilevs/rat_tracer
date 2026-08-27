@@ -1,19 +1,14 @@
-"""Which way the video is being looked at, and everything that follows from it.
+"""A researcher's pass through a video, and everything it takes to make one.
 
-The application has two modes of operation -- watching the coverage track
-build up, and checking a single frame's detection -- and something has to
-choose between them, keep them consistent, and expose the result. That used to
-be the UI's job, which put the behaviour in the one place hardest to test.
+The model behind the application: where the video is stopped, what the
+detector says about the frame stopped on, and which frames have been marked as
+failures. It is the whole review minus the parts that genuinely need Qt --
+those stay in :mod:`rat_tracer.ui`, which drives this and reports completions
+back to it.
 
-This class owns it instead. It holds both modes, selects the active one, and
-gives the UI a small vocabulary against which every control is a one-liner:
-:meth:`open_video`, :meth:`set_playing`, :meth:`seek`, :meth:`step`,
-:meth:`set_problem_mode`, :meth:`toggle_mark`, :meth:`undo`.
-
-Nothing here imports Qt. Anything asynchronous is a request handed to a
-service plus a completion reported back (:meth:`detection_ready`,
-:meth:`mark_stored` ...), so tests drive a whole session synchronously with
-fakes -- no threads, no event loop, no model weights, no temp directories.
+The behaviour used to live in the widget, which put it in the one place
+hardest to test; the split exists so a review can be driven without an event
+loop.
 """
 
 from collections.abc import Callable
@@ -34,10 +29,10 @@ logger = getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class SessionListener:
-    """What the session tells the UI, as plain callbacks.
+class ReviewListener:
+    """What the review tells the UI, as plain callbacks.
 
-    Deliberately not Qt signals: the session must stay drivable without an
+    Deliberately not Qt signals: the review must stay drivable without an
     event loop. ``VideoMasker`` supplies callbacks that emit the real signals.
     """
 
@@ -51,16 +46,36 @@ class SessionListener:
     mark_failed: Callable[[int], None] = lambda _index: None
 
 
-class ReviewSession:
-    """Selects the mode of operation and exposes what it makes possible."""
+class VideoReview:
+    """A video being reviewed frame by frame, with the detector's help.
+
+    Hours of recording hold a handful of frames worth acting on, and reaching
+    them is the whole task. This exposes the vocabulary that task is made of --
+    :meth:`open_video`, :meth:`set_playing`, :meth:`seek`, :meth:`step` a
+    single frame, look at what the detector found there, :meth:`toggle_mark`
+    the ones it got wrong, :meth:`undo` -- so that every control in the UI is
+    one call against it and no decision is left for the widget to re-derive.
+
+    What is drawn over the video is the one thing that varies: the cumulative
+    track the background pass has built up, or one frame's detection alone.
+    Those are the two modes (:mod:`rat_tracer.review_modes`); keeping them
+    consistent with playback and with each other is in service of the
+    navigation above, not a purpose of its own.
+
+    Nothing here imports Qt. Anything that cannot finish immediately is a
+    request handed to a service plus a completion reported back
+    (:meth:`detection_ready`, :meth:`mark_stored` ...), so a test drives an
+    entire review synchronously with fakes -- no threads, no event loop, no
+    model weights, no temp directories.
+    """
 
     def __init__(
         self,
-        listener: SessionListener | None = None,
+        listener: ReviewListener | None = None,
         storage: MarkStorage | None = None,
         detection: DetectionSource | None = None,
     ):
-        self.listener = listener if listener is not None else SessionListener()
+        self.listener = listener if listener is not None else ReviewListener()
         self.render = MaskRenderCore()
         self.coverage = CoverageMode(self.render.history)
         self.problem = ProblemReportMode(view=self.render, detection=detection, storage=storage)

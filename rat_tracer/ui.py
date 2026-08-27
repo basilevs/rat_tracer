@@ -42,8 +42,8 @@ from rat_tracer.lib import model_path
 from rat_tracer.mask_render_core import FrameCapture
 from rat_tracer.paint import presence_frames
 from rat_tracer.progress_cache import load_progress, save_progress, video_key
-from rat_tracer.review_session import ReviewSession, SessionListener
 from rat_tracer.translations import resolve_translations
+from rat_tracer.video_review import ReviewListener, VideoReview
 
 T = TypeVar("T")
 
@@ -252,9 +252,9 @@ class MarkStorageWorker(_Worker):
 
 
 class QtDetectionService:
-    """Runs detection on a worker thread, for the session to ask.
+    """Runs detection on a worker thread, for the review to ask.
 
-    Owns the thread's whole life: the session holds one of these for as long as
+    Owns the thread's whole life: the review holds one of these for as long as
     it exists, while the thread underneath is created on first use and replaced
     after a video is closed.
     """
@@ -339,7 +339,7 @@ class QtMarkStorage:
 class VideoMasker(QObject):
     """Qt's half of the application: properties, signals, timers and threads.
 
-    Every decision belongs to :class:`~rat_tracer.review_session.ReviewSession`,
+    Every decision belongs to :class:`~rat_tracer.video_review.VideoReview`,
     which this class drives and reports completions to. What is left here is
     the part that genuinely needs Qt -- exposing state to QML, scheduling a
     render on the event loop, running detection and storage on threads, and
@@ -358,9 +358,9 @@ class VideoMasker(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Named handlers rather than lambdas over ``self._session``: the
+        # Named handlers rather than lambdas over ``self._review``: the
         # services are built before it exists, and each of these is a one-line
-        # relay from a worker's signal into the session.
+        # relay from a worker's signal into the review.
         self._detection = QtDetectionService(
             on_ready=self._detection_ready,
             on_failed=self._detection_failed,
@@ -370,8 +370,8 @@ class VideoMasker(QObject):
             on_failed=self._mark_failed,
             on_removed=self._mark_removed,
         )
-        self._session = ReviewSession(
-            listener=SessionListener(
+        self._review = VideoReview(
+            listener=ReviewListener(
                 schedule_render=self._schedule_render,
                 state_changed=self._on_state_changed,
                 mark_stored=self.mark_saved.emit,
@@ -391,27 +391,27 @@ class VideoMasker(QObject):
 
     @Slot(int, object)
     def _detection_ready(self, frame_index: int, detection: Detection) -> None:
-        self._session.detection_ready(frame_index, detection)
+        self._review.detection_ready(frame_index, detection)
 
     @Slot(int)
     def _detection_failed(self, frame_index: int) -> None:
-        self._session.detection_failed(frame_index)
+        self._review.detection_failed(frame_index)
 
     @Slot(int)
     def _mark_stored(self, frame_index: int) -> None:
-        self._session.mark_stored(frame_index)
+        self._review.mark_stored(frame_index)
 
     @Slot(int)
     def _mark_failed(self, frame_index: int) -> None:
-        self._session.mark_failed(frame_index)
+        self._review.mark_failed(frame_index)
 
     @Slot(int)
     def _mark_removed(self, frame_index: int) -> None:
-        self._session.mark_removed(frame_index)
+        self._review.mark_removed(frame_index)
 
     def _on_state_changed(self) -> None:
         self.mark_state_changed.emit()
-        self.problem_mode_changed.emit(self._session.problem_mode)
+        self.problem_mode_changed.emit(self._review.problem_mode)
 
     def _emit_frame(self, frame: QVideoFrame) -> None:
         masker_logger.debug("_emit_frame: emitting frame (empty=%s)", not frame.isValid())
@@ -448,9 +448,9 @@ class VideoMasker(QObject):
                 return frame
 
         self._cap = cap
-        t = CoverageComputer(self._session.history, self._video)
+        t = CoverageComputer(self._review.history, self._video)
         self._thread = t
-        self._session.open_video(FrameCaptureAdapter(), self._video, t.key)
+        self._review.open_video(FrameCaptureAdapter(), self._video, t.key)
         self._thread_connection = t.frameReady.connect(self._on_frame_ready)
         t.start()
 
@@ -467,7 +467,7 @@ class VideoMasker(QObject):
     @Slot()
     def _on_frame_ready(self):
         masker_logger.debug("_on_frame_ready")
-        self._session.frame_processed()
+        self._review.frame_processed()
 
     def _get_video_output(self) -> QObject:
         masker_logger.debug("_get_video_output: %s", self._video_output)
@@ -504,34 +504,34 @@ class VideoMasker(QObject):
         self._storage.stop()
         self._video = None
         self._cap = None
-        self._session.close_video()
+        self._review.close_video()
         self._emit_frame(QVideoFrame())
 
     def _get_playing(self) -> bool:
-        return self._session.playing
+        return self._review.playing
 
     def _set_playing(self, value: bool) -> None:
         masker_logger.debug("_set_playing: %s", value)
-        self._session.set_playing(value)
+        self._review.set_playing(value)
 
     playing = Property(bool, _get_playing, _set_playing)
 
     @Property(str, notify=position_changed)
     def time_text(self) -> str:
-        return self._session.time_text
+        return self._review.time_text
 
     @Property(int, notify=position_changed)
     def frame_index(self) -> int:
         """The displayed frame's index, so a researcher and a technician can
         refer to the same frame unambiguously."""
-        return self._session.frame_index
+        return self._review.frame_index
 
     def _get_position(self) -> float:
-        return self._session.position
+        return self._review.position
 
     def _set_position(self, new_value: float) -> None:
         masker_logger.debug("_set_position: %.3f", new_value)
-        self._session.seek(new_value)
+        self._review.seek(new_value)
 
     position = Property(float, _get_position, _set_position, notify=position_changed)
 
@@ -541,7 +541,7 @@ class VideoMasker(QObject):
 
     @Slot()
     def _rerender_if_needed(self):
-        outcome = self._session.render_frame()
+        outcome = self._review.render_frame()
         masker_logger.debug("_rerender_if_needed: should_emit=%s", outcome.should_emit)
         if not outcome.should_emit:
             return
@@ -549,46 +549,46 @@ class VideoMasker(QObject):
             bgr_array_to_qvideoframe(outcome.image) if outcome.image is not None else QVideoFrame()
         )
         self._emit_frame(frame)
-        self.position_changed.emit(self._session.position)
+        self.position_changed.emit(self._review.position)
 
     def _get_problem_mode(self) -> bool:
-        return self._session.problem_mode
+        return self._review.problem_mode
 
     def _set_problem_mode(self, value: bool) -> None:
         masker_logger.debug("_set_problem_mode: %s", value)
-        self._session.set_problem_mode(value)
+        self._review.set_problem_mode(value)
 
     problem_mode = Property(bool, _get_problem_mode, _set_problem_mode, notify=problem_mode_changed)
 
     @Property(bool, notify=mark_state_changed)
     def can_mark(self) -> bool:
-        return self._session.can_mark
+        return self._review.can_mark
 
     @Property(bool, notify=mark_state_changed)
     def frame_marked(self) -> bool:
-        return self._session.frame_marked
+        return self._review.frame_marked
 
     @Slot()
     def toggleMark(self) -> None:
         """Store the frame on screen, or withdraw it if it is already stored."""
-        self._session.toggle_mark()
+        self._review.toggle_mark()
 
     @Slot()
     def markBadFrame(self) -> None:
-        self._session.mark()
+        self._review.mark()
 
     @Slot()
     def unmarkFrame(self) -> None:
-        self._session.unmark()
+        self._review.unmark()
 
     @Slot()
     def undoLastMark(self) -> None:
-        self._session.undo()
+        self._review.undo()
 
     @Slot(int)
     def stepFrame(self, delta: int) -> None:
         """Move exactly *delta* frames, pausing playback."""
-        self._session.step(delta)
+        self._review.step(delta)
 
 
 def bgr_array_to_qvideoframe(bgr_arr: MatLike) -> QVideoFrame:

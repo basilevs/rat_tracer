@@ -73,7 +73,7 @@ class _FakeMode:
 
 
 def _open(core: MaskRenderCore, cap: _FakeCapture) -> None:
-    """Open a video the way a session does, identity included."""
+    """Open a video the way a review does, identity included."""
     core.open(cap, _VIDEO, _KEY)
 
 

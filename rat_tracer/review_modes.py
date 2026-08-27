@@ -14,7 +14,7 @@ what made the UI complicated:
 A single frame cannot be judged from the cumulative view at all, which is why
 these are modes rather than layers. Each is self-contained: what it draws, when
 it needs redrawing, and what it makes possible. Choosing between them belongs
-to :class:`~rat_tracer.review_session.ReviewSession`; neither mode knows the
+to :class:`~rat_tracer.video_review.VideoReview`; neither mode knows the
 other exists, and neither imports Qt.
 """
 
