@@ -172,6 +172,8 @@ class CoverageMode:
     def draw(self, image: ndarray, frame_index: int) -> None:
         if not self._history.contains(frame_index):
             logger.debug("CoverageMode: frame %d is not processed yet", frame_index)
+            # Whatever was drawn before is not on screen any more.
+            self._drawn = None
             return
         apply_red_mask(image, self._history[frame_index])
         self._drawn = frame_index
@@ -241,6 +243,11 @@ class ProblemReportMode:
         detection = self._detections.get(frame_index)
         if detection is None:
             logger.debug("ProblemReportMode: no detection for frame %d yet", frame_index)
+            # Nothing of this mode's is on screen now. Leaving the previous
+            # frame's record standing would let a seek back to it look judged
+            # while a different frame is still displayed -- and a mark taken
+            # then pairs that frame's index with this frame's pixels.
+            self._drawn = None
             return
         draw_detection_boxes(image, detection.boxes)
         self._drawn = frame_index

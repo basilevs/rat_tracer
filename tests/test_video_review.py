@@ -354,6 +354,34 @@ def test_a_frame_may_not_be_marked_before_its_answer_arrives(fixture):
     assert review.can_mark
 
 
+def test_a_frame_may_not_be_marked_while_a_different_one_is_on_screen(fixture):
+    """Regression: seeking back to an already-judged frame made the control live
+    again before the render that puts that frame back on screen. The mark then
+    took its index from where the researcher was and its pixels from what was
+    still displayed, filing one frame's image under another frame's number --
+    silently corrupt training data, which is the one thing marking exists for."""
+    judged = fixture.reach_judged_frame(0.5)
+    fixture.review.seek(0.9)
+    fixture.review.render_frame()  # a frame with no detection is displayed now
+    assert not fixture.review.can_mark
+
+    fixture.review.seek(0.5)  # back to the judged frame, but nothing redrawn yet
+
+    assert not fixture.review.can_mark, "its detection is not what is on screen"
+    fixture.review.toggle_mark()
+    fixture.executor.pump()
+    assert fixture.store.stored == [], "this mark would carry frame 90's pixels"
+
+    fixture.review.render_frame()  # now it really is back on screen
+
+    assert fixture.review.can_mark
+    fixture.review.toggle_mark()
+    fixture.executor.pump()
+    request = fixture.store.stored[0]
+    assert request.frame_index == judged
+    assert np.array_equal(request.image, _frame(judged)), "the index and the pixels agree"
+
+
 def test_nothing_may_be_marked_without_storage():
     review = VideoReview(detector=_FakeDetector())
     review.open_video(_FakeCapture(), _VIDEO)
