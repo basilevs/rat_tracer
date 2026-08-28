@@ -24,6 +24,6 @@
     ]
   },
   "enabledPlugins": {
-    "coderabbit@claude-plugins-official": true
+    "coderabbit@claude-plugins-official": false
   }
 }
